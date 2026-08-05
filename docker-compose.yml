@@ -1,0 +1,144 @@
+# gmail-archive: web UI + dedicated PostgreSQL. This is the DEFAULT stack.
+#
+#   docker compose up -d
+#
+# A bare `docker compose` command in this directory manages the real deployment.
+# Any development variant must be selected explicitly with -f, so that running
+# the plain command can never silently swap a production service for a dev one.
+# `tests/test_compose_config.py` pins this file's posture.
+#
+# Requires POSTGRES_PASSWORD in .env — see .env.example.
+services:
+  web:
+    container_name: gmail-archive-web
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runtime      # hardened stage: nonroot 65532, no shell, no uv, code baked in
+      args:
+        GMAIL_ARCHIVE_VERSION: ${GMAIL_ARCHIVE_VERSION:-}
+        GMAIL_ARCHIVE_COMMIT: ${GMAIL_ARCHIVE_COMMIT:-}
+        GMAIL_ARCHIVE_BUILD_TIME: ${GMAIL_ARCHIVE_BUILD_TIME:-}
+    labels:
+      # Picked up by an existing Promtail agent's Docker service discovery if
+      # you run one. No log shipper is defined in this file; these are inert
+      # without one.
+      - "logging=promtail"
+      - "logging_jobname=gmail-archive"
+    # The app binds 0.0.0.0 inside the container; this mapping is what limits
+    # exposure. Loopback-only by default — the UI renders twenty years of mail
+    # and has no authentication of its own.
+    ports:
+      - "127.0.0.1:${WEB_PORT:-8000}:8000"
+    environment:
+      GMAIL_ARCHIVE_VERSION: ${GMAIL_ARCHIVE_VERSION:-}
+      GMAIL_ARCHIVE_COMMIT: ${GMAIL_ARCHIVE_COMMIT:-}
+      GMAIL_ARCHIVE_BUILD_TIME: ${GMAIL_ARCHIVE_BUILD_TIME:-}
+      GMAIL_ARCHIVE_BLOB_DIR: /blobs
+      GMAIL_ARCHIVE_LOG_LEVEL: ${GMAIL_ARCHIVE_LOG_LEVEL:-INFO}
+      # Built from POSTGRES_PASSWORD; the app reaches the server as
+      # `postgres:5432` over the compose network.
+      GMAIL_ARCHIVE_DATABASE_URL: postgresql://gmail_archive:${POSTGRES_PASSWORD:-}@postgres:5432/gmail_archive
+    volumes:
+      - ${GMAIL_ARCHIVE_BLOB_HOST_PATH:-./data/blobs}:/blobs
+    stop_grace_period: 30s
+    restart: unless-stopped
+    depends_on:
+      init-perms:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+
+  # Pre-flight ownership fix. The application containers run as Chainguard
+  # nonroot (UID/GID 65532), but host bind mounts do not inherit the image's
+  # ownership: Docker creates a missing host directory as root, and the app then
+  # cannot write a single blob into it. This one-shot runs as root purely to
+  # hand the bind mounts to 65532.
+  init-perms:
+    image: busybox:1.36
+    user: "0:0"
+    command:
+      - sh
+      - -c
+      - |
+        mkdir -p /blobs && chown -R 65532:65532 /blobs
+    volumes:
+      - ${GMAIL_ARCHIVE_BLOB_HOST_PATH:-./data/blobs}:/blobs
+    restart: "no"
+
+  postgres:
+    container_name: gmail-archive-postgres
+    # Pinned major. A silent major upgrade will not start against an existing
+    # data directory, and this one holds the derived index over an irreplaceable
+    # archive.
+    image: postgres:18
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: gmail_archive
+      POSTGRES_DB: gmail_archive
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env — copy .env.example to .env and fill it in}
+    # Replaces the server configuration wholesale, so postgresql.conf must stay
+    # self-contained; anything omitted there falls back to a built-in default
+    # rather than the initdb-generated value.
+    command:
+      - postgres
+      - -c
+      - config_file=/etc/postgresql/postgresql.conf
+    # Uncomment to reach Postgres from the host (psql, pg_dump, an external
+    # migration run). Left commented in normal operation so 5432 is not exposed
+    # on the box — the web and ingest services reach it over the compose network.
+    # ports:
+    #   - "127.0.0.1:5432:5432"
+    volumes:
+      - ./postgresql.conf:/etc/postgresql/postgresql.conf:ro
+      # /var/lib/postgresql, NOT /var/lib/postgresql/data. The 18+ images store
+      # data under a major-version-specific subdirectory (18/docker) so that
+      # `pg_upgrade --link` does not have to cross a mount point. Mounting the
+      # old 15-era path makes the container refuse to start with "there appears
+      # to be PostgreSQL data in: /var/lib/postgresql/data (unused
+      # mount/volume)" — the entrypoint reads it as a half-finished major
+      # upgrade rather than a fresh install.
+      - pgdata:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U gmail_archive -d gmail_archive"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    stop_grace_period: 30s
+    labels:
+      # Pin the major version; do not let watchtower bump it.
+      - "com.centurylinklabs.watchtower.enable=false"
+
+  # On-demand ingest. Does not run on `up` (guarded by a profile):
+  #   docker compose --profile ingest run --rm ingest /mbox/<file>.mbox
+  ingest:
+    profiles: ["ingest"]
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runtime
+    environment:
+      GMAIL_ARCHIVE_BLOB_DIR: /blobs
+      GMAIL_ARCHIVE_LOG_LEVEL: ${GMAIL_ARCHIVE_LOG_LEVEL:-INFO}
+      GMAIL_ARCHIVE_WORKERS: ${GMAIL_ARCHIVE_WORKERS:-}
+      GMAIL_ARCHIVE_BATCH_SIZE: ${GMAIL_ARCHIVE_BATCH_SIZE:-}
+      GMAIL_ARCHIVE_DATABASE_URL: postgresql://gmail_archive:${POSTGRES_PASSWORD:-}@postgres:5432/gmail_archive
+    volumes:
+      # Read-only: the Takeout export is the only copy until ingest finishes,
+      # and nothing in this project has a reason to write to it.
+      - ${MBOX_HOST_DIR:-./data/mbox}:/mbox:ro
+      - ${GMAIL_ARCHIVE_BLOB_HOST_PATH:-./data/blobs}:/blobs
+    depends_on:
+      init-perms:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+    entrypoint: ["/app/.venv/bin/python", "-m", "gmail_archive", "ingest"]
+    restart: "no"
+
+volumes:
+  # A named volume, not a bind mount: moving this stack between hosts is meant
+  # to be an .env change plus a data copy, and a named volume keeps the database
+  # files off whatever the host's directory layout happens to be.
+  pgdata:
