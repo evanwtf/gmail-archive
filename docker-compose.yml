@@ -14,7 +14,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-      target: runtime      # hardened stage: nonroot 65532, no shell, no uv, code baked in
+      target: runtime      # nonroot 65532, no uv, code baked in (not the builder stage)
       args:
         GMAIL_ARCHIVE_VERSION: ${GMAIL_ARCHIVE_VERSION:-}
         GMAIL_ARCHIVE_COMMIT: ${GMAIL_ARCHIVE_COMMIT:-}

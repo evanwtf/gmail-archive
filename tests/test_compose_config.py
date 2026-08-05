@@ -31,7 +31,7 @@ class TestWebService:
     def test_builds_the_hardened_runtime_stage(self) -> None:
         assert _service("web")["build"]["target"] == "runtime", (
             "the default stack must build the nonroot runtime stage, not the "
-            "builder stage that still carries uv and a shell"
+            "builder stage that still carries uv and the build tooling"
         )
 
     def test_does_not_mount_host_source_over_baked_in_code(self) -> None:

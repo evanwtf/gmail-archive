@@ -50,8 +50,8 @@ permanent public commit of real mail.
 
 Working today:
 
-- Docker image (Chainguard, nonroot, no shell in the runtime stage) and a
-  compose stack with a dedicated Postgres 18
+- Docker image (Debian slim pinned to an exact Python patch release, runs as a
+  non-root user) and a compose stack with a dedicated Postgres 18
 - `/healthz`, `/readyz`, `/version`; `gmail-archive version`, `gmail-archive serve`
 
 Not built yet: the fixture generator, the parser, the schema and migrations, the

@@ -1,11 +1,27 @@
 # syntax=docker/dockerfile:1
 
+# python:3.13.14-slim-trixie, pinned to an exact patch release.
+#
+# The obvious alternative, cgr.dev/chainguard/python, is a better hardening
+# story but cannot be pinned: the free tier publishes only :latest and :latest-dev
+# (`docker manifest inspect cgr.dev/chainguard/python:3.13` is denied), so the
+# interpreter minor version moves under you between rebuilds. This project's
+# core is stdlib `email` and `mailbox` parsing, whose behavior changes between
+# Python minors, and it runs on a local network rather than the public
+# internet — so a pinned interpreter is worth more here than a shell-less
+# runtime.
+#
+# Debian slim over alpine: musllinux wheels do now exist for psycopg-binary and
+# uvloop, but glibc/manylinux remains the better-tested path for psycopg, and
+# the size difference does not matter for a tool that stores tens of gigabytes.
+ARG PYTHON_IMAGE=python:3.13.14-slim-trixie
+
 ARG GMAIL_ARCHIVE_VERSION
 ARG GMAIL_ARCHIVE_COMMIT
 ARG GMAIL_ARCHIVE_BUILD_TIME
 
 # ── builder ───────────────────────────────────────────────────────────────────
-FROM cgr.dev/chainguard/python:latest-dev AS builder
+FROM ${PYTHON_IMAGE} AS builder
 
 WORKDIR /app
 
@@ -21,15 +37,13 @@ ENV UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy \
     UV_PROJECT_ENVIRONMENT=/app/.venv \
     # Build against the base image's interpreter, never a uv-managed one.
-    # .python-version pins 3.13 for local development; the Chainguard images
-    # ship 3.14, so without this uv downloads its own CPython into
-    # /home/nonroot/.local/share/uv/ and points .venv/bin/python at it. The
-    # runtime stage copies only /app, so that symlink dangles and the container
-    # dies at startup with:
-    #   exec: "/app/.venv/bin/python": stat ...: no such file or directory
-    # UV_PYTHON_DOWNLOADS=never turns a future requires-python mismatch into a
-    # loud build failure instead of a silently broken image.
-    UV_PYTHON=/usr/bin/python3 \
+    # Without this, uv resolves .python-version by downloading its own CPython
+    # into ~/.local/share/uv/ and points .venv/bin/python at it; the runtime
+    # stage copies only /app, so the symlink dangles and the container dies at
+    # startup with `exec: "/app/.venv/bin/python": no such file or directory`.
+    # DOWNLOADS=never turns a future requires-python mismatch into a loud build
+    # failure rather than a silently broken image.
+    UV_PYTHON=/usr/local/bin/python3 \
     UV_PYTHON_DOWNLOADS=never
 
 # Dependency layer first, before the source copy, so editing a Python file does
@@ -40,19 +54,10 @@ RUN uv sync --frozen --no-install-project --no-dev
 COPY . .
 RUN uv sync --frozen --no-dev
 
-# Prepared here because the runtime stage below is shell-less: a RUN there
-# fails at build time with no /bin/sh. Writable directories are created now and
-# carried over with ownership. Under /app because this stage also runs as the
-# nonroot build user — `mkdir /scratch` at the filesystem root is denied.
-RUN mkdir -p /app/scratch/blobs /app/scratch/data
-
 # ── runtime ───────────────────────────────────────────────────────────────────
-FROM cgr.dev/chainguard/python:latest AS runtime
+FROM ${PYTHON_IMAGE} AS runtime
 
 WORKDIR /app
-
-COPY --from=builder /app/.venv /app/.venv
-COPY --from=builder /app/src   /app/src
 
 ARG GMAIL_ARCHIVE_VERSION
 ARG GMAIL_ARCHIVE_COMMIT
@@ -64,28 +69,35 @@ ENV PATH="/app/.venv/bin:$PATH" \
     GMAIL_ARCHIVE_COMMIT=$GMAIL_ARCHIVE_COMMIT \
     GMAIL_ARCHIVE_BUILD_TIME=$GMAIL_ARCHIVE_BUILD_TIME
 
-EXPOSE 8000
+# UID 65532 is not arbitrary: it is what the compose init-perms one-shot chowns
+# the bind mounts to. Change it here and the app loses write access to the blob
+# store. (The number is inherited from the Chainguard base this image replaced;
+# keeping it means the existing blob store ownership stays valid.)
+RUN groupadd --gid 65532 nonroot \
+    && useradd --uid 65532 --gid 65532 --no-create-home --shell /usr/sbin/nologin nonroot \
+    && mkdir -p /blobs /data \
+    && chown 65532:65532 /blobs /data
 
-# No RUN in this stage — cgr.dev/chainguard/python:latest ships no shell at all,
-# so these arrive pre-made from the builder, chowned to nonroot (65532) at copy
-# time. Bind mounts still need the init-perms one-shot in compose; host
-# directories do not inherit image ownership.
-COPY --from=builder --chown=65532:65532 /app/scratch/blobs /blobs
-COPY --from=builder --chown=65532:65532 /app/scratch/data  /data
+# The venv is built against this exact base image's interpreter, so its
+# bin/python symlink resolves here. Ownership is set at copy time because the
+# app runs as 65532 and needs to read every file in it.
+COPY --from=builder --chown=65532:65532 /app/.venv /app/.venv
+COPY --from=builder --chown=65532:65532 /app/src   /app/src
+
+EXPOSE 8000
 VOLUME ["/blobs", "/data"]
 USER nonroot
 
-# Exec form and no curl: there is no shell, so CMD-SHELL healthchecks and any
-# external binary are both unavailable. urllib from the venv python is all
-# there is. /healthz is liveness only and deliberately does not touch Postgres,
-# so a database restart cannot mark this container unhealthy.
+# Exec form and no curl: slim ships neither curl nor wget, and urllib from the
+# venv python needs no extra package. /healthz is liveness only and
+# deliberately does not touch Postgres, so a database restart cannot mark this
+# container unhealthy and put it in a restart loop.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD ["/app/.venv/bin/python", "-c", \
          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz')"]
 
-# Exec-form ENTRYPOINT naming the venv python explicitly: the base image ships
-# ENTRYPOINT ["/usr/bin/python"], which would swallow a CMD as script arguments
-# ("python python -m gmail_archive ..."). The absolute path also means PATH
-# ordering cannot change which interpreter boots.
+# Exec-form and an absolute path to the venv interpreter, so PATH ordering
+# cannot change which Python boots and a CMD is passed as arguments to the
+# module rather than being swallowed as a script name.
 ENTRYPOINT ["/app/.venv/bin/python", "-m", "gmail_archive"]
 CMD ["serve", "--host", "0.0.0.0", "--port", "8000"]
