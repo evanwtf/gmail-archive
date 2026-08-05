@@ -48,9 +48,23 @@ permanent public commit of real mail.
 
 ## Project status
 
-- [docs/plan.md](docs/plan.md) — the scoped build plan, all phases
-- [docs/progress.md](docs/progress.md) — what has actually been built, and how
-  to verify it
+Work is tracked in three places, split by what each is good at:
+
+| Where | What | Why there |
+|---|---|---|
+| [GitHub issues](https://github.com/evanwtf/gmail-archive/issues) | Live status — one issue per build phase, closed at its gate | `open`/`closed` is a real signal. A hand-edited status line goes stale silently |
+| [docs/plan.md](docs/plan.md) | The scoped specification, all phases | Reference material, versioned with the code it describes and readable with no network. Splitting one coherent spec across nine issues would fragment it |
+| [docs/progress.md](docs/progress.md) | What was built, how to verify it, and findings worth keeping | Archaeology outlives a tracker |
+
+So: **issues say where we are, `plan.md` says what we are building, `progress.md`
+says what we learned.** A phase issue links to its `plan.md` section and lists
+acceptance criteria only — it never restates the spec, so there is one place to
+change when the design moves. Phases are grouped into two milestones: *Prototype
+(Phases 2–5)*, specified seriously, and *Directional (Phases 6–10)*, where the
+shape is right but the details are guesses.
+
+Completed phases are also tagged (`git tag -n`), so a tag checkout gives a
+reviewed working state.
 
 Working today:
 
