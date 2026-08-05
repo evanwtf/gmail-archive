@@ -48,6 +48,10 @@ permanent public commit of real mail.
 
 ## Project status
 
+- [docs/plan.md](docs/plan.md) — the scoped build plan, all phases
+- [docs/progress.md](docs/progress.md) — what has actually been built, and how
+  to verify it
+
 Working today:
 
 - Docker image (Debian slim pinned to an exact Python patch release, runs as a
