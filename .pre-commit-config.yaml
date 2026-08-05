@@ -1,0 +1,65 @@
+# Run `uv run pre-commit install` after cloning. There is no CI on this
+# repository, so these hooks are the entire safety net.
+repos:
+  - repo: local
+    hooks:
+      # First in the list deliberately: it must fail before anything else has a
+      # chance to reformat, rewrite, or otherwise touch a file full of real mail.
+      - id: reject-mail-data
+        name: reject mail data (mbox / blobs / oversized files)
+        entry: python scripts/reject_mail_data.py
+        # `language: python` (not system) so pre-commit provisions the
+        # interpreter itself. Under `language: system` the entry resolves
+        # against whatever PATH git hands the hook, which does not include the
+        # project venv: `uv run pre-commit run` worked while a bare
+        # `git commit` failed with "Executable `python` not found" — the guard
+        # silently absent from the only path that matters. The script is
+        # stdlib-only, so the bare env pre-commit builds is enough.
+        language: python
+        pass_filenames: true
+
+      # ruff and mypy run from the project's own dev dependency group rather
+      # than a mirror repo, so the versions the hooks use are the versions
+      # `uv run ruff` / `uv run mypy` use. One source of truth, no drift.
+      - id: ruff-check
+        name: ruff check
+        entry: uv run ruff check --force-exclude
+        language: system
+        types_or: [python, pyi]
+        require_serial: true
+
+      - id: ruff-format
+        name: ruff format
+        entry: uv run ruff format --force-exclude
+        language: system
+        types_or: [python, pyi]
+        require_serial: true
+
+      # No pass_filenames: mypy --strict needs the whole package to resolve
+      # types across modules, and checking only staged files hides breakage in
+      # their callers.
+      - id: mypy
+        name: mypy --strict
+        entry: uv run mypy
+        language: system
+        pass_filenames: false
+        types_or: [python, pyi]
+        require_serial: true
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      # Belt and braces with reject-mail-data's own size check: this one also
+      # catches large binaries that are not mail.
+      - id: check-added-large-files
+        args: [--maxkb=5120]
+      - id: check-merge-conflict
+      - id: check-yaml
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+      - id: detect-private-key
+
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.30.0
+    hooks:
+      - id: gitleaks
