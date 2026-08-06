@@ -37,9 +37,13 @@
     <tbody>
       {% for msg in results %}
       <tr>
-        <td class="date-cell">{{ msg.internal_date|default("", true) }}</td>
+        <td class="date-cell">
+          {{ msg.internal_date|default("", true) }}
+          {%- if msg.internal_date %}<span class="date-relative">{{ msg.internal_date|relative_date }}</span>{% endif %}
+        </td>
         <td><a href="/messages/{{ msg.raw_sha256 }}">{{ msg.subject|default("(no subject)", true) }}</a></td>
-        <td class="addr-cell">{{ msg.from_addr|default("", true) }}</td>
+        {# title= so a truncated address is still readable on hover. #}
+        <td class="addr-cell" title="{{ msg.from_addr|default('', true) }}">{{ msg.from_addr|default("", true) }}</td>
         <td class="snippet-cell">{{ msg.snippet|replace("[hl]", "<mark>")|replace("[/hl]", "</mark>")|safe }}</td>
       </tr>
       {% endfor %}

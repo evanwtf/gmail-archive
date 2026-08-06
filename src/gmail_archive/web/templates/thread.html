@@ -9,7 +9,8 @@
   {% for msg in messages %}
   <div class="thread-card">
     <div class="thread-card-header">
-      <span class="thread-card-date">{{ msg.internal_date|default("", true) }}</span>
+      <span class="thread-card-date">{{ msg.internal_date|default("", true) }}
+        {%- if msg.internal_date %} <span class="date-relative-inline">({{ msg.internal_date|relative_date }})</span>{% endif %}</span>
       <span class="thread-card-from">{{ msg.from_addr|default("", true) }}</span>
       <span class="thread-card-subject">
         <a href="/messages/{{ msg.raw_sha256 }}">{{ msg.subject|default("(no subject)", true) }}</a>

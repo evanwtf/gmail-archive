@@ -30,11 +30,13 @@ from gmail_archive.query import (
 )
 from gmail_archive.storage import BlobStore
 from gmail_archive.version import build_info
+from gmail_archive.web.filters import relative_date
 
 HERE = Path(__file__).parent
 
 app = FastAPI(title="gmail-archive", docs_url="/docs")
 templates = Jinja2Templates(directory=str(HERE / "templates"))
+templates.env.filters["relative_date"] = relative_date
 app.mount("/static", StaticFiles(directory=str(HERE / "static")), name="static")
 
 

@@ -33,8 +33,12 @@ nav {
 .nav-links a:hover { color: #fff; }
 
 /* ── Main content ───────────────────────────────────────────── */
+/* 95% of the viewport rather than a fixed column: the message tables carry
+   full email addresses, and a 960px cap truncated the From field on every
+   row while leaving most of a wide monitor empty. */
 main {
-  max-width: 960px;
+  width: 95%;
+  max-width: 95%;
   margin: 2rem auto;
   padding: 0 1rem;
 }
@@ -130,8 +134,24 @@ h2 { font-size: 1.15rem; margin: 1.5rem 0 0.5rem; }
 
 .message-list tr:last-child td { border-bottom: none; }
 
-.date-cell { white-space: nowrap; font-size: 0.85rem; color: #666; }
-.addr-cell { font-size: 0.85rem; color: #555; max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.date-cell { white-space: nowrap; font-size: 0.85rem; color: #666; vertical-align: top; }
+
+/* Second line under the absolute timestamp. Dimmer and smaller: the exact
+   date is the fact, the age is the orientation. */
+.date-relative { display: block; font-size: 0.75rem; color: #999; }
+.date-relative-inline { font-size: 0.85rem; color: #999; }
+
+/* No max-width — the ellipsis is a last resort at narrow viewports now that
+   the page is 95% wide, not something every row hits. `title` on the cell
+   keeps the full address reachable when it does trigger. */
+.addr-cell {
+  font-size: 0.85rem;
+  color: #555;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 24rem;
+}
 .count-cell { text-align: right; font-variant-numeric: tabular-nums; }
 .snippet-cell { font-size: 0.85rem; color: #444; }
 .snippet-cell mark { background: #fff3a8; padding: 0 2px; }

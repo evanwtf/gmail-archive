@@ -10,7 +10,8 @@
     {% if msg.cc_addrs %}
     <tr><th>Cc</th><td>{{ msg.cc_addrs|join(", ") }}</td></tr>
     {% endif %}
-    <tr><th>Date</th><td>{{ msg.internal_date|default("", true) }}</td></tr>
+    <tr><th>Date</th><td>{{ msg.internal_date|default("", true) }}
+      {%- if msg.internal_date %} <span class="date-relative-inline">({{ msg.internal_date|relative_date }})</span>{% endif %}</td></tr>
     <tr><th>Message-ID</th><td><code>{{ msg.message_id|default("", true) }}</code></td></tr>
     {% if msg.thread_id %}
     <tr><th>Thread</th><td><a href="/thread/{{ msg.thread_id }}">{{ msg.thread_id }}</a></td></tr>
