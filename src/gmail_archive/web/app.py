@@ -37,7 +37,13 @@ from gmail_archive.query import (
 )
 from gmail_archive.storage import BlobStore
 from gmail_archive.version import build_info
-from gmail_archive.web.filters import gmail_date, relative_date, sender_name
+from gmail_archive.web.filters import (
+    defang,
+    gmail_date,
+    highlight_snippet,
+    relative_date,
+    sender_name,
+)
 
 HERE = Path(__file__).parent
 
@@ -51,6 +57,8 @@ templates = Jinja2Templates(directory=str(HERE / "templates"))
 templates.env.filters["relative_date"] = relative_date
 templates.env.filters["gmail_date"] = gmail_date
 templates.env.filters["sender_name"] = sender_name
+templates.env.filters["defang"] = defang
+templates.env.filters["highlight_snippet"] = highlight_snippet
 app.mount("/static", StaticFiles(directory=str(HERE / "static")), name="static")
 
 
@@ -285,7 +293,10 @@ def message_detail(request: Request, sha256: str) -> HTMLResponse:
     if msg is None:
         raise HTTPException(status_code=404, detail="Message not found")
 
-    sanitized_html = nh3.clean(msg.body_html or "") if msg.body_html else ""
+    # Sanitize first, then defang: nh3 decides what markup survives, and
+    # defanging then neutralises every URL that survived with it. Doing it in
+    # the other order would let nh3 re-normalise a defanged attribute.
+    sanitized_html = defang(nh3.clean(msg.body_html)) if msg.body_html else ""
 
     context.update({"msg": msg, "sanitized_html": sanitized_html})
     return templates.TemplateResponse(request, "message.html", context)

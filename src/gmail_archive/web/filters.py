@@ -6,7 +6,88 @@ store. Kept out of `app.py` so it can be tested without standing up FastAPI.
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime
+
+from markupsafe import Markup, escape
+
+#: Schemes that can make a browser fetch something, mapped to their defanged
+#: form. `http` -> `hxxp` is the long-standing convention from malware
+#: reporting, and the point is the same here: the URL stays readable, but no
+#: parser — browser, mail client, terminal, or the reader's own reflexes —
+#: treats it as something to fetch.
+#:
+#: `mailto:` and `data:` are deliberately absent. mailto fetches nothing, and
+#: data: URIs are inline by definition, so defanging them would break embedded
+#: images that never touch the network.
+_DEFANGED_SCHEMES: dict[str, str] = {
+    "http": "hxxp",
+    "https": "hxxps",
+    "ftp": "fxp",
+    "ftps": "fxps",
+    "ws": "wxs",
+    "wss": "wxss",
+    "file": "fxle",
+}
+
+_SCHEME_RE = re.compile(
+    r"\b(" + "|".join(sorted(_DEFANGED_SCHEMES, key=len, reverse=True)) + r")://",
+    re.IGNORECASE,
+)
+
+#: Protocol-relative URLs — `src="//tracker.example/pixel.gif"` — inherit the
+#: page's scheme and fetch perfectly well, so they have to be caught too.
+#: Anchored to an attribute so ordinary `//` in text and in code is left alone.
+_PROTOCOL_RELATIVE_RE = re.compile(
+    r"""(?i)\b(src|href|action|background|poster|srcset|data)(\s*=\s*["']?)//"""
+)
+
+
+def defang(value: str | None) -> str:
+    """Rewrite URLs so nothing can be fetched from them.
+
+    ``http://tracker.example/pixel.gif`` becomes
+    ``hxxp://tracker.example/pixel.gif``: still legible, no longer a URL any
+    browser will resolve. Applied to archived message content before it is
+    rendered.
+
+    This is defence in depth, not the only defence. The CSP already restricts
+    loads to `'self'`, and the HTML body renders in a fully sandboxed iframe.
+    Defanging survives someone loosening either of those, and it also stops a
+    tracking pixel the moment the markup is copied out of the archive into
+    something with no CSP at all.
+    """
+    if not value:
+        return ""
+    defanged = _SCHEME_RE.sub(
+        lambda m: _DEFANGED_SCHEMES[m.group(1).lower()] + "://", value
+    )
+    return _PROTOCOL_RELATIVE_RE.sub(r"\1\2hxxp://", defanged)
+
+
+def highlight_snippet(value: str | None) -> Markup:
+    """Render a search snippet: defang, escape, then honour our own markers.
+
+    The order is the whole point. `ts_headline` output is message text with
+    `[hl]`/`[/hl]` inserted around the matched terms, so it must be escaped
+    before anything in it becomes markup — the previous template piped it
+    straight through `|safe`, and 274 messages in the reference archive carry
+    `<script` or `onerror=` in their searchable text.
+
+    Doing the substitution here rather than in the template is not a style
+    preference: `escape()` returns `Markup`, and `Markup.replace` escapes its
+    replacement argument, so `|escape|replace("[hl]", "<mark>")` in a template
+    produces a literal `&lt;mark&gt;`.
+
+    Caveat: a message body containing the literal text `[hl]` will render a
+    spurious `<mark>`. That is cosmetic — the escaping above means it can only
+    ever produce a `<mark>`, never arbitrary markup.
+    """
+    if not value:
+        return Markup("")
+    escaped = str(escape(defang(value)))
+    return Markup(escaped.replace("[hl]", "<mark>").replace("[/hl]", "</mark>"))
+
 
 #: Thresholds for `relative_date`, coarsest last. Each entry is
 #: (upper bound in seconds, seconds per unit, unit name).

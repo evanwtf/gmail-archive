@@ -20,9 +20,11 @@
     {% if msg.snippet %}
     <span class="row-snippet">&ndash;
       {%- if highlight %}
-        {{ msg.snippet|replace("[hl]", "<mark>")|replace("[/hl]", "</mark>")|safe }}
+        {# Escapes first, then honours the query's own [hl] markers. See
+           filters.highlight_snippet — the ordering is load-bearing. #}
+        {{ msg.snippet|highlight_snippet }}
       {%- else %}
-        {{ msg.snippet }}
+        {{ msg.snippet|defang }}
       {%- endif %}
     </span>
     {% endif %}

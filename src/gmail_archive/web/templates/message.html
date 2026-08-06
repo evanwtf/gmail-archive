@@ -35,7 +35,7 @@
     {% if msg.body_html %}
     <iframe class="html-body" sandbox="" srcdoc="{{ sanitized_html }}"></iframe>
     {% elif msg.body_text %}
-    <pre class="text-body">{{ msg.body_text }}</pre>
+    <pre class="text-body">{{ msg.body_text|defang }}</pre>
     {% else %}
     <p class="empty">This message has no text or HTML body.</p>
     {% endif %}
