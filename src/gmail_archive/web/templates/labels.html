@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block title %}Labels — gmail-archive{% endblock %}
+{% block content %}
+<h1>Labels</h1>
+
+{% if labels %}
+<table class="label-list">
+  <thead>
+    <tr>
+      <th>Label</th>
+      <th>Messages</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for label in labels %}
+    <tr>
+      <td><a href="/messages?label={{ label.label|urlencode }}">{{ label.label }}</a></td>
+      <td class="count-cell">{{ label.message_count }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="empty-state">No labels found.</p>
+{% endif %}
+{% endblock %}

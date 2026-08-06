@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block title %}Thread — gmail-archive{% endblock %}
+{% block content %}
+<h1>Thread</h1>
+<p class="thread-id">Thread ID: <code>{{ thread_id }}</code></p>
+
+{% if messages %}
+<div class="thread-messages">
+  {% for msg in messages %}
+  <div class="thread-card">
+    <div class="thread-card-header">
+      <span class="thread-card-date">{{ msg.internal_date|default("", true) }}</span>
+      <span class="thread-card-from">{{ msg.from_addr|default("", true) }}</span>
+      <span class="thread-card-subject">
+        <a href="/messages/{{ msg.raw_sha256 }}">{{ msg.subject|default("(no subject)", true) }}</a>
+      </span>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+{% else %}
+<p class="empty-state">No messages found in this thread.</p>
+{% endif %}
+{% endblock %}

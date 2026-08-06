@@ -3,8 +3,8 @@
 What has actually been built, phase by phase, so this can be picked up cold.
 The intended shape of the whole project is in [plan.md](plan.md).
 
-**Current position: Phase 6 complete. All CLI commands built, tested, linted, and
-type-checked. Next step is Phase 7: web UI.**
+**Current position: Phase 7 complete. Web UI with Jinja2 templates, HTMX, nh3
+sanitization, and CSP headers. All tests, lint, and type checks passing.**
 
 Live status is the [issue list](https://github.com/evanwtf/gmail-archive/issues),
 one issue per phase, closed at its gate — that is authoritative if this file and
@@ -467,7 +467,52 @@ Integration tests (30 tests) pass against a running Postgres stack when
 excluded from the integration run because the schema is already applied and the
 test table has too few rows for the planner to use the index.
 
-## Next step — Phase 7: Web UI
+## Phase 7 — Web UI — complete
 
 Tracked in [issue #6](https://github.com/evanwtf/gmail-archive/issues/6);
 specified in [plan.md](plan.md#phase-7--web-ui).
+
+### What was built
+
+- **`src/gmail_archive/web/app.py`** — FastAPI application with 8 HTML routes:
+  - `/` — stats dashboard with aggregate archive statistics
+  - `/messages` — message list with keyset pagination (forward-only, `after_date`/`after_sha` cursors)
+  - `/messages/{sha256}` — message detail with nh3-sanitized HTML body in sandboxed iframe
+  - `/thread/{thread_id}` — thread view with all messages in a thread
+  - `/search` — full-text search with highlighted snippets and offset pagination
+  - `/labels` — label listing with message counts
+  - `/raw/{sha256}` — raw RFC822 download with `Content-Disposition: attachment`
+  - `/healthz`, `/readyz`, `/version` — Phase 1 stub routes preserved
+
+- **CSP middleware** — sets `Content-Security-Policy` and `X-Content-Type-Options: nosniff` on every response. Blocks remote scripts (except HTMX from unpkg), remote images, and frame ancestors.
+
+- **8 Jinja2 templates** in `src/gmail_archive/web/templates/`:
+  - `base.html` — base layout with HTMX from unpkg CDN (v2.0.4), CSP meta tag, navigation
+  - `index.html` — stats dashboard with stat cards grid
+  - `messages.html` — message list table with keyset pagination
+  - `message.html` — message detail with headers, label badges, text/plain `<pre>`, HTML in sandboxed iframe, collapsible parse warnings
+  - `thread.html` — thread view with message cards
+  - `search.html` — search form with `[hl]`→`<mark>` snippet highlighting
+  - `labels.html` — label listing with links to filtered message view
+  - `error.html` — simple error page
+
+- **`src/gmail_archive/web/static/style.css`** — responsive CSS with stat cards, tables, label badges, sandboxed iframe, debug panel, pagination, search form, thread cards, empty state.
+
+### Key design decisions
+
+1. **No build step** — HTMX loaded from unpkg CDN (pinned v2.0.4). No npm, no webpack, no vite.
+2. **Keyset pagination** — Message list uses `list_messages_keyset()` with `after_date`/`after_sha` cursors. Forward-only (no "previous page"). Search uses OFFSET pagination (acceptable with GIN index).
+3. **HTML sanitization** — nh3 (Rust ammonia bindings) strips all script tags, event handlers, and remote resources server-side before rendering in a sandboxed iframe.
+4. **Defense in depth** — CSP headers + sandboxed iframe (`sandbox="allow-same-origin"`, no `allow-scripts`) + nh3 sanitization + `Content-Disposition: attachment` for raw downloads.
+5. **Simple database connections** — `psycopg.connect()` per request (no pool). Acceptable for a single-user local tool.
+
+### Bug found and fixed
+
+**Starlette 1.3.1 `TemplateResponse` argument order.** The Starlette `TemplateResponse` signature is `(self, request, name, context, ...)`, not the older `(self, name, context, ...)` convention. The app was passing the template name as `request` and the context dict as `name`, causing Jinja2 to receive a dict where it expected a template name string. Fixed all 12 `TemplateResponse` calls to pass `request` as the first argument.
+
+### Verified
+
+```
+uv run pytest                 # 178 passed, 41 skipped (integration), 1 deselected
+uv run ruff check . && uv run mypy    # clean
+```

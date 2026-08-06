@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; script-src 'self' https://unpkg.com/htmx.org@2.0.4; img-src 'self' data:; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'">
+  <title>{% block title %}gmail-archive{% endblock %}</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="https://unpkg.com/htmx.org@2.0.4"
+          integrity="sha384-HGfztofotfshcF7+8n44JQL2oJN4B7X+JUFqk1vL4C3xL4G9CQZ4k1Sd5F6F5F"
+          crossorigin="anonymous"></script>
+  {% block extra_head %}{% endblock %}
+</head>
+<body>
+  <nav>
+    <a href="/" class="nav-brand">gmail-archive</a>
+    <div class="nav-links">
+      <a href="/">Stats</a>
+      <a href="/messages">Messages</a>
+      <a href="/search">Search</a>
+      <a href="/labels">Labels</a>
+    </div>
+  </nav>
+  <main>
+    {% block content %}{% endblock %}
+  </main>
+</body>
+</html>

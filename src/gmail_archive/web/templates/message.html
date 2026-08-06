@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+{% block title %}{{ msg.subject|default("(no subject)", true) }} — gmail-archive{% endblock %}
+{% block content %}
+<h1>{{ msg.subject|default("(no subject)", true) }}</h1>
+
+<div class="message-meta">
+  <table>
+    <tr><th>From</th><td>{{ msg.from_addr|default("", true) }}</td></tr>
+    <tr><th>To</th><td>{{ msg.to_addrs|join(", ")|default("", true) }}</td></tr>
+    {% if msg.cc_addrs %}
+    <tr><th>Cc</th><td>{{ msg.cc_addrs|join(", ") }}</td></tr>
+    {% endif %}
+    <tr><th>Date</th><td>{{ msg.internal_date|default("", true) }}</td></tr>
+    <tr><th>Message-ID</th><td><code>{{ msg.message_id|default("", true) }}</code></td></tr>
+    {% if msg.thread_id %}
+    <tr><th>Thread</th><td><a href="/thread/{{ msg.thread_id }}">{{ msg.thread_id }}</a></td></tr>
+    {% endif %}
+    <tr><th>Size</th><td>{{ "{:,}"|format(msg.size_bytes) }} bytes</td></tr>
+  </table>
+</div>
+
+{% if msg.labels %}
+<div class="labels">
+  {% for label in msg.labels %}
+  <span class="label-badge">{{ label }}</span>
+  {% endfor %}
+</div>
+{% endif %}
+
+<div class="message-actions">
+  <a href="/raw/{{ msg.raw_sha256 }}" class="btn" download>Download raw message</a>
+</div>
+
+<div class="message-body">
+  {% if msg.body_text %}
+  <h2>Plain text</h2>
+  <pre class="text-body">{{ msg.body_text }}</pre>
+  {% endif %}
+
+  {% if msg.body_html %}
+  <h2>HTML</h2>
+  <div class="html-body-container">
+    <iframe class="html-body" sandbox="allow-same-origin" srcdoc="{{ sanitized_html }}"></iframe>
+  </div>
+  {% endif %}
+</div>
+
+{% if msg.parse_warnings %}
+<div class="debug-panel">
+  <details>
+    <summary>Parse warnings ({{ msg.parse_warnings|length }})</summary>
+    <ul>
+      {% for warning in msg.parse_warnings %}
+      <li><strong>{{ warning.field }}</strong>: {{ warning.message }}</li>
+      {% endfor %}
+    </ul>
+  </details>
+</div>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+{% block title %}Dashboard — gmail-archive{% endblock %}
+{% block content %}
+<h1>Archive Dashboard</h1>
+
+<div class="stats-grid">
+  <div class="stat-card">
+    <span class="stat-value">{{ stats.total_messages }}</span>
+    <span class="stat-label">Messages</span>
+  </div>
+  <div class="stat-card">
+    <span class="stat-value">{{ stats.total_blobs }}</span>
+    <span class="stat-label">Blobs</span>
+  </div>
+  <div class="stat-card">
+    <span class="stat-value">{{ stats.total_attachments }}</span>
+    <span class="stat-label">Attachments</span>
+  </div>
+  <div class="stat-card">
+    <span class="stat-value">{{ stats.total_labels }}</span>
+    <span class="stat-label">Labels</span>
+  </div>
+  <div class="stat-card">
+    <span class="stat-value">{{ stats.total_failures }}</span>
+    <span class="stat-label">Failed</span>
+  </div>
+  <div class="stat-card">
+    <span class="stat-value">{{ stats.total_runs }}</span>
+    <span class="stat-label">Ingest Runs</span>
+  </div>
+</div>
+
+<div class="stats-detail">
+  <h2>Storage</h2>
+  <table>
+    <tr>
+      <td>Total message bytes</td>
+      <td>{{ "{:,}"|format(stats.total_bytes) }}</td>
+    </tr>
+    <tr>
+      <td>Blob store bytes</td>
+      <td>{{ "{:,}"|format(stats.blob_bytes) }}</td>
+    </tr>
+  </table>
+
+  <h2>Date Range</h2>
+  <table>
+    <tr>
+      <td>Earliest message</td>
+      <td>{{ stats.date_earliest|default("N/A", true) }}</td>
+    </tr>
+    <tr>
+      <td>Latest message</td>
+      <td>{{ stats.date_latest|default("N/A", true) }}</td>
+    </tr>
+  </table>
+</div>
+{% endblock %}

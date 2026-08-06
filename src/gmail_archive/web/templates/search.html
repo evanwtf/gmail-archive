@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% block title %}Search — gmail-archive{% endblock %}
+{% block content %}
+<h1>Search</h1>
+
+<form action="/search" method="get" class="search-form">
+  <input type="search" name="q" value="{{ query|default('', true) }}" placeholder="Search messages..." class="search-input" autofocus>
+  <button type="submit" class="btn">Search</button>
+</form>
+
+{% if query %}
+  {% if results %}
+  <p class="result-count">{{ total }} result{{ 's' if total != 1 else '' }} for <strong>{{ query }}</strong></p>
+  <table class="message-list">
+    <thead>
+      <tr>
+        <th>Date</th>
+        <th>Subject</th>
+        <th>From</th>
+        <th>Snippet</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for msg in results %}
+      <tr>
+        <td class="date-cell">{{ msg.internal_date|default("", true) }}</td>
+        <td><a href="/messages/{{ msg.raw_sha256 }}">{{ msg.subject|default("(no subject)", true) }}</a></td>
+        <td class="addr-cell">{{ msg.from_addr|default("", true) }}</td>
+        <td class="snippet-cell">{{ msg.snippet|replace("[hl]", "<mark>")|replace("[/hl]", "</mark>")|safe }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  {% if offset > 0 or total > limit %}
+  <div class="pagination">
+    {% if offset > 0 %}
+    <a href="/search?q={{ query|urlencode }}&amp;offset={{ offset - limit }}&amp;limit={{ limit }}" class="prev-page">Previous</a>
+    {% endif %}
+    {% if offset + limit < total %}
+    <a href="/search?q={{ query|urlencode }}&amp;offset={{ offset + limit }}&amp;limit={{ limit }}" class="next-page">Next</a>
+    {% endif %}
+  </div>
+  {% endif %}
+
+  {% else %}
+  <p class="empty-state">No results for <strong>{{ query }}</strong>.</p>
+  {% endif %}
+{% endif %}
+{% endblock %}

@@ -318,6 +318,7 @@ def list_messages_keyset(
     after_date: datetime | None = None,
     after_sha: str | None = None,
     limit: int = 50,
+    label: str | None = None,
 ) -> list[MessageRow]:
     """List messages using keyset pagination.
 
@@ -332,39 +333,81 @@ def list_messages_keyset(
     themselves, by sha256), so a keyset walk that starts from a real date
     never reaches them. Use ``after_date=NULL, after_sha=<last_sha>`` to
     page through the NULL tail.
+
+    If ``label`` is provided, only messages carrying that label are returned.
     """
+    base_select = (
+        "select"
+        "  m.raw_sha256, m.subject, m.from_addr, m.to_addrs,"
+        "  m.internal_date, m.thread_id"
+        " from messages m"
+    )
+    if label:
+        base_select += " join labels l on l.raw_sha256 = m.raw_sha256"
+        label_where = "l.label = %s"
+
     if after_date is not None and after_sha is not None:
+        where = " where (m.internal_date, m.raw_sha256) < (%s::timestamptz, %s)"
+        params: list[object] = [after_date, after_sha]
+        if label:
+            where += " and " + label_where
+            params.append(label)
         raw_rows = conn.execute(
-            "select"
-            "  raw_sha256, subject, from_addr, to_addrs, internal_date, thread_id"
-            " from messages"
-            " where (internal_date, raw_sha256) < (%s::timestamptz, %s)"
-            " order by internal_date desc nulls last, raw_sha256 desc"
+            base_select + where
+            + " order by m.internal_date desc nulls last, m.raw_sha256 desc"
             " limit %s",
-            (after_date, after_sha, limit),
+            (*params, limit),
         ).fetchall()
     elif after_sha is not None:
-        # Page through the NULL-internal_date tail.
+        where = " where m.internal_date is null and m.raw_sha256 < %s"
+        params = [after_sha]
+        if label:
+            where += " and " + label_where
+            params.append(label)
         raw_rows = conn.execute(
-            "select"
-            "  raw_sha256, subject, from_addr, to_addrs, internal_date, thread_id"
-            " from messages"
-            " where internal_date is null and raw_sha256 < %s"
-            " order by internal_date desc nulls last, raw_sha256 desc"
+            base_select + where
+            + " order by m.internal_date desc nulls last, m.raw_sha256 desc"
             " limit %s",
-            (after_sha, limit),
+            (*params, limit),
         ).fetchall()
     else:
-        # First page.
+        where = ""
+        params = [label] if label else []
+        if label:
+            where = " where " + label_where
         raw_rows = conn.execute(
-            "select"
-            "  raw_sha256, subject, from_addr, to_addrs, internal_date, thread_id"
-            " from messages"
-            " order by internal_date desc nulls last, raw_sha256 desc"
+            base_select + where
+            + " order by m.internal_date desc nulls last, m.raw_sha256 desc"
             " limit %s",
-            (limit,),
+            (*params, limit),
         ).fetchall()
 
+    return [
+        MessageRow(
+            raw_sha256=str(r[0]),
+            subject=r[1],
+            from_addr=r[2],
+            to_addrs=list(r[3]) if r[3] else [],
+            internal_date=r[4],
+            thread_id=r[5],
+        )
+        for r in (_row(rr) for rr in raw_rows)
+    ]
+
+
+def get_thread_messages(
+    conn: psycopg.Connection[object],
+    thread_id: str,
+) -> list[MessageRow]:
+    """Fetch all messages in a thread, ordered by internal_date."""
+    raw_rows = conn.execute(
+        "select"
+        "  raw_sha256, subject, from_addr, to_addrs, internal_date, thread_id"
+        " from messages"
+        " where thread_id = %s"
+        " order by internal_date desc nulls last, raw_sha256 desc",
+        (thread_id,),
+    ).fetchall()
     return [
         MessageRow(
             raw_sha256=str(r[0]),

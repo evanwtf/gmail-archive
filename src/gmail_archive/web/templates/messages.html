@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}Messages — gmail-archive{% endblock %}
+{% block content %}
+<h1>Messages</h1>
+
+{% if label %}
+<p class="filter-badge">Label: <strong>{{ label }}</strong> <a href="/messages" class="clear-filter">&times;</a></p>
+{% endif %}
+
+{% if messages %}
+<table class="message-list">
+  <thead>
+    <tr>
+      <th>Date</th>
+      <th>Subject</th>
+      <th>From</th>
+      <th>To</th>
+      <th>Thread</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for msg in messages %}
+    <tr>
+      <td class="date-cell">{{ msg.internal_date|default("", true) }}</td>
+      <td><a href="/messages/{{ msg.raw_sha256 }}">{{ msg.subject|default("(no subject)", true) }}</a></td>
+      <td class="addr-cell">{{ msg.from_addr|default("", true) }}</td>
+      <td class="addr-cell">{{ msg.to_addrs|join(", ")|default("", true) }}</td>
+      <td>{% if msg.thread_id %}<a href="/thread/{{ msg.thread_id }}">thread</a>{% endif %}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+{% if next_cursor %}
+<div class="pagination">
+  <a href="/messages?after_date={{ next_cursor.after_date }}&amp;after_sha={{ next_cursor.after_sha }}{% if label %}&amp;label={{ label }}{% endif %}" class="next-page">Next page</a>
+</div>
+{% endif %}
+
+{% else %}
+<p class="empty-state">No messages found.</p>
+{% endif %}
+{% endblock %}
