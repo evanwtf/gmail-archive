@@ -29,6 +29,7 @@
 {% endif %}
 
 <div class="message-actions">
+  <a href="/messages/{{ msg.raw_sha256 }}/raw" class="btn">View raw text</a>
   <a href="/raw/{{ msg.raw_sha256 }}" class="btn" download>Download raw message</a>
 </div>
 
@@ -51,8 +52,10 @@
   <details>
     <summary>Parse warnings ({{ msg.parse_warnings|length }})</summary>
     <ul>
+      {# The stored JSON is {"code": ..., "detail": ...}; this panel read
+         .field/.message and so rendered an empty bullet for every warning. #}
       {% for warning in msg.parse_warnings %}
-      <li><strong>{{ warning.field }}</strong>: {{ warning.message }}</li>
+      <li><strong>{{ warning.code }}</strong>{% if warning.detail %}: {{ warning.detail }}{% endif %}</li>
       {% endfor %}
     </ul>
   </details>

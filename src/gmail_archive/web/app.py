@@ -6,6 +6,7 @@ nh3 for HTML sanitization, and CSP headers for defense-in-depth.
 
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -21,6 +22,7 @@ from gmail_archive.config import Settings
 from gmail_archive.query import (
     DEFAULT_SEARCH_SORT,
     SEARCH_SORTS,
+    get_message,
     get_message_full,
     get_thread_messages,
     list_labels,
@@ -33,6 +35,11 @@ from gmail_archive.version import build_info
 from gmail_archive.web.filters import relative_date
 
 HERE = Path(__file__).parent
+
+#: A content hash is 64 lowercase hex characters and nothing else. Checked
+#: before the blob store sees it: `BlobStore.path_for` raises ValueError on a
+#: wrong-length string, which would surface as a 500 rather than a 404.
+_SHA256_RE = re.compile(r"[0-9a-f]{64}")
 
 app = FastAPI(title="gmail-archive", docs_url="/docs")
 templates = Jinja2Templates(directory=str(HERE / "templates"))
@@ -303,6 +310,60 @@ def labels_page(request: Request) -> HTMLResponse:
         request,
         "labels.html",
         {"labels": labels},
+    )
+
+
+#: Rendered inline by /messages/{sha}/raw. Past this, the page stops being
+#: useful and starts being a way to make the browser chew on a 25 MB base64
+#: attachment; the download link is the right tool at that size.
+RAW_VIEW_MAX_BYTES = 512_000
+
+
+@app.get("/messages/{sha256}/raw", response_class=HTMLResponse)
+def raw_message_view(request: Request, sha256: str) -> HTMLResponse:
+    """Show the raw RFC822 source in the browser.
+
+    Distinct from ``/raw/{sha256}``, which forces a download. The bytes are
+    escaped into a ``<pre>`` by Jinja rather than served as their own document,
+    so a message whose body is HTML — or claims to be — cannot render or
+    execute here.
+    """
+    if not _SHA256_RE.fullmatch(sha256):
+        raise HTTPException(status_code=404, detail="Message not found")
+
+    store = _get_store()
+    try:
+        data = store.get(sha256)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Message not found") from None
+
+    truncated = len(data) > RAW_VIEW_MAX_BYTES
+    shown = data[:RAW_VIEW_MAX_BYTES] if truncated else data
+
+    # errors="replace": these are twenty years of real mail, and plenty of it
+    # is not valid UTF-8. A mojibake byte is worth showing; an exception is not.
+    text = shown.decode("utf-8", errors="replace")
+
+    subject: str | None = None
+    try:
+        with _get_conn() as conn:
+            msg = get_message(conn, sha256)
+            subject = msg.subject if msg else None
+    except psycopg.Error:
+        # The blob is the point of this page; the subject is only a heading.
+        pass
+
+    return templates.TemplateResponse(
+        request,
+        "raw.html",
+        {
+            "sha256": sha256,
+            "subject": subject,
+            "text": text,
+            "truncated": truncated,
+            "shown_bytes": len(shown),
+            "total_bytes": len(data),
+        },
     )
 
 

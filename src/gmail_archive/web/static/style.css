@@ -275,6 +275,33 @@ h2 { font-size: 1.15rem; margin: 1.5rem 0 0.5rem; }
 .sort-controls { margin-bottom: 1rem; font-size: 0.9rem; color: #555; }
 .sort-active { color: #202124; }
 
+/* ── Raw source view ────────────────────────────────────────── */
+.raw-subject { font-size: 1rem; margin-bottom: 0.25rem; }
+.raw-meta { font-size: 0.85rem; color: #666; margin-bottom: 1rem; }
+
+.raw-truncated {
+  background: #fff8e1;
+  border: 1px solid #f0d98c;
+  border-radius: 6px;
+  padding: 0.5rem 0.75rem;
+  font-size: 0.85rem;
+  margin-bottom: 1rem;
+}
+
+/* pre-wrap, not pre: header continuation lines and long base64 runs would
+   otherwise push a horizontal scrollbar across the whole page. */
+.raw-source {
+  background: #fff;
+  border: 1px solid #ddd;
+  border-radius: 8px;
+  padding: 1rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.8rem;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 /* ── Pagination ──────────────────────────────────────────────── */
 .pagination {
   margin-top: 1rem;

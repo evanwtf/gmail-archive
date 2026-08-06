@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block title %}Raw source — gmail-archive{% endblock %}
+{% block content %}
+<h1>Raw message source</h1>
+
+<p class="raw-subject">{{ subject|default("(no subject)", true) }}</p>
+<p class="raw-meta">
+  <code>{{ sha256 }}</code> · {{ "{:,}".format(total_bytes) }} bytes
+</p>
+
+<div class="message-actions">
+  <a href="/messages/{{ sha256 }}" class="btn">Back to message</a>
+  <a href="/raw/{{ sha256 }}" class="btn" download>Download</a>
+</div>
+
+{% if truncated %}
+<p class="raw-truncated">
+  Showing the first {{ "{:,}".format(shown_bytes) }} of
+  {{ "{:,}".format(total_bytes) }} bytes. Download for the whole message.
+</p>
+{% endif %}
+
+{# Escaped into a <pre> by Jinja's autoescaping, never served as its own
+   document — a message body that is HTML displays as text, not as markup. #}
+<pre class="raw-source">{{ text }}</pre>
+{% endblock %}
