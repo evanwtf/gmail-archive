@@ -301,6 +301,72 @@ rates the generator should reproduce.
 
 Phases 3–10 are [issues #2–#9](https://github.com/evanwtf/gmail-archive/issues).
 
+## Phase 3 — Parser — complete
+
+Tagged `phase-3`. The parser (`parser.py`) converts raw RFC822 bytes into a typed
+`ParsedMessage` dataclass. Every field is best-effort; failures accumulate in
+`parse_warnings` rather than raising. A hypothesis property test asserts that
+`parse()` never raises for any byte string.
+
+### Key findings
+
+1. **`Message.get()` does not always return a string.** Under compat32 policy, an
+   8-bit byte in a structured header (Date, Message-ID, etc.) returns an
+   `email.header.Header` object instead. Downstream calls to `.split()` then die
+   with `AttributeError`. Found the hard way: 3 messages out of 277,020 in the
+   real export. The fix is `_header_str()`, which coerces any value to `str`.
+2. **The hypothesis property test missed this.** Both the arbitrary-bytes test and
+   the 8-bit-header fixture put their bad bytes in `Subject`, an unstructured
+   header nothing later tries to parse. The hazard is an 8-bit byte in a
+   *structured* header. Now tested explicitly for every structured header.
+
+## Phase 4 — Schema and storage — complete
+
+Tagged `phase-4`. The schema (`migrations/0001_initial.sql`) defines 8 tables:
+`schema_migrations`, `blobs`, `messages`, `labels`, `attachments`,
+`message_sightings`, `ingest_runs`, `failed_messages`. The blob store
+(`storage.py`) provides content-addressed storage with a verified write ordering:
+file fsync → atomic rename → directory fsync → row insert.
+
+The migration runner (`migrate.py`) discovers numbered `.sql` files and applies
+them in a transaction together with the bookkeeping row, so a failure half-way
+through leaves neither the DDL nor the claim that it was applied.
+
+## Phase 5 — Ingest pipeline — complete
+
+The ingest pipeline (`ingest.py`) ties together the mbox splitter, parser, blob
+store, and Postgres. Key design:
+
+- **Byte-level mbox splitter** (`mbox.py`): scans the file via `mmap` for `From_`
+  separators, yields `(offset, length)` ranges. Never loads the full file.
+- **Process pool**: workers receive `(offset, length)`, `pread` their range, hash,
+  parse, write the blob, and return metadata. No 25 MB messages through the pipe.
+- **Batch COPY**: the main process collects results and writes them to Postgres via
+  `COPY` at `batch_size` boundaries.
+- **Resumable**: the checkpoint lives in the database (`ingest_runs.checkpoint_offset`),
+  so it survives a container kill. Re-running after a kill resumes; re-ingesting
+  the same file twice adds nothing via `ON CONFLICT DO NOTHING`.
+- **Failures**: land in `failed_messages` with raw bytes and traceback; the run
+  continues.
+
+### CLI commands added
+
+- `gmail-archive ingest MBOX` — run the ingest pipeline
+- `gmail-archive stats` — print archive statistics
+- `gmail-archive search QUERY` — full-text search
+
+### Query module
+
+`query.py` is the only place allowed to build read SQL against `messages`. Provides
+`stats()`, `search()`, `list_messages()`, and `get_message()`.
+
+### Verified
+
+```
+uv run pytest                 # 166 passed, 20 skipped (integration), 1 deselected
+uv run ruff check . && uv run mypy    # clean
+```
+
 ## Open questions
 
 None blocking. Deliberately deferred:

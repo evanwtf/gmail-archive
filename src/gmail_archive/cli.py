@@ -11,6 +11,7 @@ import logging
 from pathlib import Path
 
 import click
+import psycopg
 
 from gmail_archive.config import Settings
 from gmail_archive.fixtures import MEASURED_RATES as _MEASURED
@@ -103,6 +104,130 @@ def gen_fixture(out: Path, count: int, seed: int, pathologies: str | None) -> No
                 "seed": report.seed,
                 "bytes": report.bytes_written,
                 "pathologies": report.pathology_counts,
+            },
+            indent=2,
+        )
+    )
+
+
+@main.command()
+@click.argument("mbox", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.option(
+    "--workers", default=None, type=int, help="Worker count (default: cpu count)"
+)
+@click.option(
+    "--batch-size", default=None, type=int, help="Messages per batch (default: 1000)"
+)
+def ingest(mbox: Path, workers: int | None, batch_size: int | None) -> None:
+    """Ingest an mbox file into Postgres.
+
+    Resumable and idempotent: re-running after a kill picks up where it left
+    off, and re-ingesting the same file twice adds nothing.
+    """
+    from gmail_archive.ingest import ingest as _ingest
+
+    settings = Settings.from_env()
+    if not settings.database_url:
+        click.echo("GMAIL_ARCHIVE_DATABASE_URL is not set", err=True)
+        raise click.Abort()
+
+    report = _ingest(
+        settings,
+        mbox,
+        workers=workers,
+        batch_size=batch_size,
+    )
+    click.echo(
+        json.dumps(
+            {
+                "source_path": report.source_path,
+                "messages_seen": report.messages_seen,
+                "messages_new": report.messages_new,
+                "messages_duplicate": report.messages_duplicate,
+                "failures": report.failures,
+                "elapsed_seconds": round(report.elapsed_seconds, 1),
+                "run_id": report.run_id,
+            },
+            indent=2,
+        )
+    )
+
+
+@main.command()
+def stats() -> None:
+    """Print archive statistics."""
+    from gmail_archive.query import stats as _stats
+
+    settings = Settings.from_env()
+    if not settings.database_url:
+        click.echo("GMAIL_ARCHIVE_DATABASE_URL is not set", err=True)
+        raise click.Abort()
+
+    with psycopg.connect(settings.database_url) as conn:
+        result = _stats(conn)
+
+    click.echo(
+        json.dumps(
+            {
+                "total_messages": result.total_messages,
+                "total_blobs": result.total_blobs,
+                "total_attachments": result.total_attachments,
+                "total_labels": result.total_labels,
+                "total_failures": result.total_failures,
+                "total_runs": result.total_runs,
+                "total_bytes": result.total_bytes,
+                "blob_bytes": result.blob_bytes,
+                "date_earliest": (
+                    str(result.date_earliest) if result.date_earliest else None
+                ),
+                "date_latest": (
+                    str(result.date_latest) if result.date_latest else None
+                ),
+            },
+            indent=2,
+        )
+    )
+
+
+@main.command()
+@click.argument("query", nargs=-1, required=True)
+@click.option("--limit", default=50, show_default=True, type=int)
+@click.option("--offset", default=0, show_default=True, type=int)
+def search(query: tuple[str, ...], limit: int, offset: int) -> None:
+    """Full-text search over archived messages.
+
+    QUERY is a websearch-style string (words, quoted phrases, or -excluded terms).
+    """
+    from gmail_archive.query import search as _search
+
+    settings = Settings.from_env()
+    if not settings.database_url:
+        click.echo("GMAIL_ARCHIVE_DATABASE_URL is not set", err=True)
+        raise click.Abort()
+
+    query_str = " ".join(query)
+    with psycopg.connect(settings.database_url) as conn:
+        result = _search(conn, query_str, limit=limit, offset=offset)
+
+    click.echo(
+        json.dumps(
+            {
+                "query": result.query,
+                "total": result.total,
+                "messages": [
+                    {
+                        "raw_sha256": m.raw_sha256,
+                        "subject": m.subject,
+                        "from_addr": m.from_addr,
+                        "to_addrs": m.to_addrs,
+                        "internal_date": (
+                            str(m.internal_date) if m.internal_date else None
+                        ),
+                        "thread_id": m.thread_id,
+                        "snippet": m.snippet,
+                    }
+                    for m in result.messages
+                ],
             },
             indent=2,
         )
