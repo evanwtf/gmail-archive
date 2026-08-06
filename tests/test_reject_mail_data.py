@@ -47,6 +47,34 @@ class TestRejects:
         target.write_bytes(b"\0" * (MAX_BYTES + 1))
         assert _run(target) == 1
 
+    def test_archive_by_extension(self, tmp_path: Path) -> None:
+        target = tmp_path / "takeout-20260805T095328Z-1-001.tgz"
+        target.write_bytes(b"not really gzip")
+        assert _run(target) == 1
+
+    def test_small_archive_by_magic_bytes_under_a_harmless_name(
+        self, tmp_path: Path
+    ) -> None:
+        # The gap this closes. The real export came as two tarballs; the 56 KB
+        # one was under the size limit, had no blocked extension, and gzip magic
+        # is not a From_ line — so every existing check waved it through.
+        target = tmp_path / "notes.bin"
+        target.write_bytes(b"\x1f\x8b\x08\x00" + b"\x00" * 64)
+        assert _run(target) == 1
+
+    def test_tar_magic_at_offset_257(self, tmp_path: Path) -> None:
+        # Uncompressed tar hides its magic past the first 256 bytes, which is
+        # exactly how much the guard used to read.
+        target = tmp_path / "bundle.bin"
+        target.write_bytes(b"\x00" * 257 + b"ustar\x0000" + b"\x00" * 64)
+        assert _run(target) == 1
+
+    def test_unpacked_takeout_directory(self, tmp_path: Path) -> None:
+        target = tmp_path / "Takeout" / "Mail" / "User Settings" / "Filters.json"
+        target.parent.mkdir(parents=True)
+        target.write_text("{}")
+        assert _run(target) == 1
+
     def test_reports_every_offending_file_not_just_the_first(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
