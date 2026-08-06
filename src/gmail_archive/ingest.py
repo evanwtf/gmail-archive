@@ -28,6 +28,7 @@ Architecture
 
 from __future__ import annotations
 
+import json
 import logging
 import multiprocessing
 import traceback
@@ -130,10 +131,10 @@ def _worker_task(
                 }
                 for i, a in enumerate(parsed.attachments)
             ],
-            "parse_warnings": [
-                {"code": w.code.value, "detail": w.detail}
-                for w in parsed.parse_warnings
-            ],
+            "parse_warnings": json.dumps(
+                [{"code": w.code.value, "detail": w.detail}
+                 for w in parsed.parse_warnings]
+            ),
             "blob_written": blob_result.written,
         }
 
