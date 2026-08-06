@@ -3,8 +3,9 @@
 What has actually been built, phase by phase, so this can be picked up cold.
 The intended shape of the whole project is in [plan.md](plan.md).
 
-**Current position: Phases 0 and 1 complete, reviewed, and tagged.
-Next step is Phase 2 — the synthetic mbox fixture generator.**
+**Current position: Phases 0 and 1 complete, reviewed, and tagged. The real
+Takeout export has since arrived and been surveyed, correcting several plan
+assumptions. Next step is Phase 2 — the synthetic mbox fixture generator.**
 
 Live status is the [issue list](https://github.com/evanwtf/gmail-archive/issues),
 one issue per phase, closed at its gate — that is authoritative if this file and
@@ -16,7 +17,7 @@ which is what a tracker is bad at.
 ```bash
 uv sync
 uv run pre-commit install          # the hooks are the only safety net; no CI yet
-uv run pytest                      # 30 passed
+uv run pytest                      # 34 passed
 uv run ruff check . && uv run ruff format --check .
 uv run mypy                        # --strict, configured in pyproject.toml
 
@@ -77,7 +78,7 @@ Tagged `phase-1`. Four commits, pushed straight to `main`.
   profile with the export mounted read-only.
 - **`postgresql.conf`**: a documented starting point; every knob says what to
   scale it against rather than being tuned for one machine.
-- **Tests (30)**: `test_compose_config.py` pins production posture,
+- **Tests**: `test_compose_config.py` pins production posture,
   `test_dockerfile.py` pins the image properties, `test_reject_mail_data.py`
   covers the guard, `test_web_stub.py` covers the health/version surface.
 
@@ -157,14 +158,86 @@ interpreter download.
 
 ---
 
+## Interlude — the real export arrived, and was surveyed
+
+The Google Takeout export landed between Phase 1 and Phase 2. It is unpacked
+**outside this repository**, read-only, and nothing derived from it is committed
+here. Absolute counts and the per-year volume curve are deliberately omitted —
+this repository is public and that is personal data — so what follows is
+structure and rates only.
+
+The survey was a throwaway single-pass script, not committed: it streams the
+mbox, header-scans every message, and fully parses a 1-in-40 sample. Percentages
+below are shares of all messages unless stated.
+
+### What it changed
+
+The sizing estimates in `plan.md` were several times too high on both axes. That
+is not a rounding error — it moves ingest from an overnight job to a
+tens-of-minutes one, and it is why the attachment-extraction knob below flipped.
+
+### Assumptions confirmed
+
+| Plan decision | Evidence |
+|---|---|
+| `gmail_id` nullable for the mbox path | `X-GM-THRID` on 100% of messages, `X-GM-MSGID` on **none** |
+| `raw_sha256` as PK, not `Message-ID` | duplicate `Message-ID` ~0.04%, missing ~0.01% |
+| Unquote `>From ` on ingest | ~1% of messages carry a quoted line |
+| tsvector 1 MB bound | ~0.4% of bodies exceed it; each would abort a COPY batch unbounded |
+| NUL sanitisation | ~1 in 7,000 sampled messages has a NUL in a decoded text part |
+| Keyset index `nulls last` | ~2.7% have no parseable `Date`, so NULL `internal_date` exists from day one |
+
+The `nulls last` decision is worth calling out: it looked like the most
+speculative item in the schema review and it turned out to have the largest real
+footprint.
+
+### Assumptions contradicted
+
+1. **Bare `From ` body lines do not occur.** Takeout quotes consistently, so
+   every occurrence is already `>From `. The real work is unquoting, not
+   detection — but the byte-level splitter stays, because the corpus is one
+   sample and the failure mode is silent corruption.
+2. **No nonexistent charsets.** Every declared charset in the sample resolved in
+   Python, including `koi8-r`, `iso646-us`, `ansi_x3.4-1968` and
+   `unicode-1-1-utf-7`. `charset=unicode` was invented for the plan.
+3. **Multipart nesting maxes out at depth 3,** not the 5+ the fixture menu
+   assumed.
+4. **Date outliers were guessed wrong** — no mail predates the account, and the
+   only implausible value is a single far-future year.
+5. **`X-Gmail-Labels` is not always present** (~1.8% absent). The plan assumed it
+   was, and the fixture menu had no case for it.
+
+### Throughput baseline
+
+A single-threaded, header-only scan sustains ~190 MB/s and ~2,800 msg/sec on the
+development machine, with a 1-in-40 full MIME parse mixed in. That is the number
+Phase 5 has to beat, and it is measured on the real corpus rather than a fixture.
+
+## Guard hardening
+
+One commit after the Phase 1 tag, prompted directly by the export arriving.
+
+`scripts/reject_mail_data.py` blocked `*.mbox` by extension, sniffed for a
+`From_` separator, and capped file size. A Takeout export defeats all three: it
+arrives as a `.tgz` with the mbox inside, and gzip magic is not a `From_` line.
+Checked against the real files, the large tarball tripped only the size limit —
+luck, not design — and a small companion tarball passed **every** check.
+
+Now also refused: archive extensions, archive magic bytes (gzip, zip, bzip2, xz,
+zstd, 7z, and tar — whose magic sits at offset 257, which is why the header read
+grew from 256 to 512 bytes), and any path under a `Takeout/` directory.
+
 ## Next step — Phase 2: synthetic mbox fixture generator
 
 Tracked in [issue #1](https://github.com/evanwtf/gmail-archive/issues/1);
 specified in [plan.md](plan.md#phase-2--synthetic-mbox-fixture-generator).
 
-Load-bearing, and deliberately ahead of the parser: there is no real mbox export
-yet, so nothing downstream can be exercised until the project can generate its
-own input.
+Still load-bearing and still ahead of the parser, but the reason has changed. It
+used to be "there is no real export yet." There is one now, and it makes a worse
+fixture than a generated corpus: it cannot enter a public repository, it holds no
+example of several pathologies the parser must survive, and its weighting is one
+person's mail rather than a deliberate spread. The survey above supplies the
+rates the generator should reproduce.
 
 Phases 3–10 are [issues #2–#9](https://github.com/evanwtf/gmail-archive/issues).
 
@@ -175,6 +248,10 @@ None blocking. Deliberately deferred:
 - **CI.** No workflow yet, by choice — rapid iteration until the shape stops
   moving. Until then the pre-commit hooks are the entire safety net, which is why
   `uv run pre-commit install` is not optional.
-- **Attachment extraction default.** Whether to write attachment bytes to the
-  blob store by default, or record metadata only and re-materialize on demand,
-  should be decided against a measurement rather than a guess. Phase 4/5.
+- ~~**Attachment extraction default.**~~ **Answered** by the survey: extracting
+  every attachment adds roughly a quarter to the blob store, not the doubling
+  that motivated making it a knob, and only ~6% of attachment parts are
+  byte-identical to another — so dedup is not the win the plan assumed either. It
+  defaults on. Caveat kept in `plan.md`: the figure is from a 1-in-40 sample and
+  attachment bytes are skewed by rare large messages, so a full attachment pass
+  should confirm it before Phase 5 relies on the number.

@@ -7,21 +7,28 @@ onward is directional and the details are guesses. See
 
 ## Goal
 
-Ingest a Google Takeout Gmail mbox export — roughly twenty years, expect
-300k–800k messages and 30–80 GB — into Postgres for permanent local archival,
-search, and export, with a local web UI for browsing. A read-only IMAP server
-and a Gmail API sync path may follow.
+Ingest a Google Takeout Gmail mbox export — roughly twenty years of mail — into
+Postgres for permanent local archival, search, and export, with a local web UI
+for browsing. A read-only IMAP server and a Gmail API sync path may follow.
+
+The export now exists and has been surveyed, so the sizing estimates that used
+to sit here are gone: they were several times too high on both message count and
+bytes. The measured totals are deliberately **not** published — this repository
+is public and the corpus is personal mail — but every rate quoted below is
+measured against the real export rather than assumed.
 
 **Every line of code must be exercisable against synthetic fixtures the project
 generates itself.** "Works on day one with zero real input" is an acceptance
-criterion, not an aspiration: the real export does not exist yet, and the tool
-should still be fully demonstrable without it.
+criterion, not an aspiration. That no longer rests on the export being absent —
+it rests on the export being unusable as a fixture. This repository is public, so
+real mail can never be a test input, and pathology coverage has to be deliberate
+rather than whatever one corpus happens to contain.
 
 ## Locked decisions
 
 | Decision | Choice | Why |
 |---|---|---|
-| `raw_sha256` hashes | The **unquoted** RFC822 message | mbox prefixes body lines starting with `From ` with `>`, so file bytes are not the original. Unquoting means `.eml` export is correct; mbox export re-quotes and still round-trips byte-identically |
+| `raw_sha256` hashes | The **unquoted** RFC822 message | mbox prefixes body lines starting with `From ` with `>`, so file bytes are not the original. Unquoting means `.eml` export is correct; mbox export re-quotes and still round-trips byte-identically. Measured: ~1% of messages carry a quoted line, and *no* message contains a bare `From ` body line — Takeout quotes consistently, so unquoting is deterministic |
 | Postgres | 18, major pinned | Longest support runway for a store meant to outlive the hardware |
 | Base image | `python:3.13.14-slim-trixie`, exact patch | Chainguard cannot be version-pinned on the free tier, and stdlib `email`/`mailbox` behavior changes between Python minors |
 | Licence | MIT, from commit #1 | Adding it later does not cleanly cover earlier commits |
@@ -123,18 +130,42 @@ The load-bearing piece, and a first-class CLI command
 than a test helper — that is what makes the README quick start real.
 
 Configurable message counts and a menu of pathologies it can produce
-individually:
+individually. The menu below was originally guesswork; it has since been checked
+against the real export, and the split matters — a generator weighted like the
+guesses would over-test things that never happen and under-test the ones that do.
 
-- `X-Gmail-Labels` with commas, quotes, unicode, nested paths
-- Missing / malformed / timezone-less `Date`; dates in 1998 and 2087
-- Charsets that are wrong, absent, or nonexistent (`charset=unicode`)
-- RFC 2047 encoded-words, including ones split mid-multibyte-character
-- Multipart nesting 5+ deep; `alternative` inside `related` inside `mixed`
-- Duplicate `Message-ID` across messages; messages with none
-- Attachments: repeated across messages (dedup target), zero-byte, `../` and
-  unicode in the filename, 25 MB near-limit
-- Bare `From ` lines inside bodies — the classic mbox delimiter bug
-- Base64 with bad padding; 8-bit bytes in a header
+**Observed in the real export.** Rates are the share of all messages, so the
+generator can reproduce a realistic mix rather than a uniform one:
+
+- `X-Gmail-Labels` **absent entirely** (~1.8%) — the original menu assumed the
+  header was always present. Nested `/` paths on ~11% of labelled messages, up
+  to 10 labels on a single message
+- `Date` missing (~2.7%), timezone-less (~1.4%), unparseable (~0.01%), plus a
+  single implausible far-future year
+- `>From `-quoted body lines (~1%)
+- 8-bit bytes in the header block (~0.2%)
+- Bodies over the 1 MB tsvector limit (~0.4%)
+- Duplicate `Message-ID` (~0.04%); missing `Message-ID` (~0.01%)
+- NUL bytes in a decoded text part — rare, roughly 1 in 7,000 sampled, and one
+  is enough to abort a COPY batch
+- Legacy charsets that are all real and all resolvable: `iso-8859-1`,
+  `windows-1252`, `koi8-r`, `iso646-us`, `ansi_x3.4-1968`, `unicode-1-1-utf-7`
+- A message larger than Gmail's own 25 MB attachment limit
+
+**Not observed, kept as deliberate synthetic cases.** Each is cheap to generate
+and the parser should survive it regardless; absence in one corpus is not proof
+it cannot happen, and the attachment items were checked on a 1-in-40 sample
+rather than exhaustively:
+
+- Bare `From ` lines inside bodies — the classic mbox delimiter bug, and the
+  reason the splitter is byte-level. Takeout never emits one
+- Nonexistent charsets (`charset=unicode`): every declared charset in the sample
+  resolved in Python, so this is defensive only
+- Multipart nesting 5+ deep; real maximum observed is depth 3
+- RFC 2047 encoded-words split mid-multibyte-character
+- Attachments: repeated across messages, zero-byte, `../` and unicode in the
+  filename
+- Base64 with bad padding
 - One message truncated mid-body
 
 `--seed` for reproducibility (asserted by generating twice and comparing bytes),
@@ -148,7 +179,7 @@ Bytes in, typed `ParsedMessage` out. The raw bytes are ground truth; the parse i
 a derived view and never lossy.
 
 Every field is best-effort. Failures accumulate in structured `parse_warnings`
-rather than raising — one bad 2009 Outlook message must never kill a six-hour
+rather than raising — one bad 2009 Outlook message must never kill a full-corpus
 run. Hypothesis property test: for any byte string, `parse()` returns or warns,
 never raises.
 
@@ -184,23 +215,32 @@ it:
   does not assume a field we have not verified exists.
 - `gmail_id`, `thread_id`, `message_id` are all best-effort and nullable.
   Takeout supplies `X-GM-THRID` and `X-Gmail-Labels`, but no per-message Gmail
-  id — expect `gmail_id` to be null for the whole mbox path.
+  id. Confirmed against the export: `X-GM-THRID` on 100% of messages,
+  `X-GM-MSGID` on **none**, so `gmail_id` is null for the whole mbox path.
 - **The search column is a generated `tsvector` using the 2-arg
   `to_tsvector`** — the 1-arg form is `STABLE`, not `IMMUTABLE`, and Postgres
   rejects it in a generated column. `left()` bounds each input.
 - **The keyset index needs `nulls last`.** `internal_date` is nullable, so a
   plain `desc` puts NULLs first and keyset pagination walks off the end.
-  `query.py` must match the index ordering exactly.
+  `query.py` must match the index ordering exactly. Not theoretical: ~2.7% of
+  the real export has no parseable `Date` at all, so those rows exist from the
+  first ingest and land at the front of every unqualified listing.
 - `labels` is indexed with **btree, not GIN**: GIN on a scalar text column needs
   `btree_gin`, buys nothing over btree for equality, and btree serves "all
   messages with label X" directly.
 - `attachments.filename` and `.mime_type` are stored **as declared** and never
   trusted as a filesystem path or for serving.
-- **Attachment extraction is a knob.** Attachment bytes already live inside the
-  message raw blob, so extracting them stores a second decoded copy — 80 GB of
-  mbox could become 120–140 GB after dedup. Metadata (sha256, size, filename,
-  mime) is always recorded; writing the bytes is configurable, and `verify`
-  reports "attachment rows with no blob" as an explicit state.
+- **Attachment extraction is a knob, and it defaults on.** Attachment bytes
+  already live inside the message raw blob, so extracting them stores a second
+  decoded copy. The fear was that this roughly doubles the store. Measured
+  against the real export it adds about a quarter: attachments are a smaller
+  share of the corpus than assumed, and dedup barely helps — only ~6% of
+  attachment parts are byte-identical to another, so the "dedup target" framing
+  was wrong too. A quarter is cheap enough to pay by default. Metadata (sha256,
+  size, filename, mime) is always recorded; writing the bytes stays
+  configurable, and `verify` reports "attachment rows with no blob" as an
+  explicit state. Sampled 1-in-40, and attachment bytes are skewed by rare large
+  messages — confirm with a full pass before treating the ratio as firm.
 - `message_sightings` records each sighting of byte-identical duplicates that
   collapse into one row, so nothing is silently lost and `verify` can reconcile
   against the source. Inserts need `ON CONFLICT DO NOTHING` — resume replays the
@@ -234,9 +274,14 @@ test greps for stray SQL against an explicit allowlist and fails.
 - Failures land in `failed_messages` with raw bytes and traceback; the run
   continues.
 - Runs as a profiled one-shot against a read-only `/mbox` mount.
-- **Benchmark and report both msg/sec and MB/sec** — the run moves 30–80 GB
-  through sha256 and into storage, so parse rate alone will not be the headline.
-  Measure before optimizing.
+- **Benchmark and report both msg/sec and MB/sec** — the run moves the whole
+  corpus through sha256 and into storage, so parse rate alone will not be the
+  headline. Measure before optimizing. There is a baseline to beat: a
+  single-threaded, header-only scan of the real export sustains ~190 MB/s and
+  ~2,800 msg/sec on the development machine. Anything materially slower is the
+  pipeline's own overhead, not the disk — and at that rate a full ingest is a
+  tens-of-minutes job, which is worth knowing before designing for an overnight
+  run.
 
 A minimal `stats` and `search` land at this gate rather than waiting for Phase 6,
 so there is something to query as early as it is honest to have one.
