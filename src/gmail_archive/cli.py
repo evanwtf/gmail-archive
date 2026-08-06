@@ -111,6 +111,20 @@ def gen_fixture(out: Path, count: int, seed: int, pathologies: str | None) -> No
 
 
 @main.command()
+def migrate() -> None:
+    """Apply pending database schema migrations."""
+    from gmail_archive.migrate import migrate as _migrate
+
+    settings = Settings.from_env()
+    if not settings.database_url:
+        click.echo("GMAIL_ARCHIVE_DATABASE_URL is not set", err=True)
+        raise click.Abort()
+
+    ran = _migrate(settings.database_url)
+    click.echo(json.dumps({"applied": len(ran)}, indent=2))
+
+
+@main.command()
 @click.argument("mbox", type=click.Path(exists=True, dir_okay=False, path_type=Path))
 @click.option(
     "--workers", default=None, type=int, help="Worker count (default: cpu count)"
