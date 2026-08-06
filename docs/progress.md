@@ -3,9 +3,10 @@
 What has actually been built, phase by phase, so this can be picked up cold.
 The intended shape of the whole project is in [plan.md](plan.md).
 
-**Current position: Phase 9 complete. Read-only IMAP server using pymap, with
-folder/UID model, lazy content loading from blob store, and backfill command.
-Phase 10 (README, runbook, ADRs, AGENTS.md) in progress.**
+**Current position: all ten phases built. A full-repo review on 2026-08-06 found
+that "built" and "working" are not the same thing for Phase 9 — see
+[Post-build review](#post-build-review--2026-08-06) at the end of this file for
+what the review found and where each finding is tracked.**
 
 Live status is the [issue list](https://github.com/evanwtf/gmail-archive/issues),
 one issue per phase, closed at its gate — that is authoritative if this file and
@@ -17,7 +18,7 @@ which is what a tracker is bad at.
 ```bash
 uv sync
 uv run pre-commit install          # the hooks are the only safety net; no CI yet
-uv run pytest                      # 166 passed, 20 skipped (integration), 1 deselected
+uv run pytest                      # 208 passed, 41 skipped (integration), 1 deselected
 uv run ruff check . && uv run ruff format --check .
 uv run mypy                        # --strict, configured in pyproject.toml
 
@@ -414,6 +415,10 @@ None blocking. Deliberately deferred:
 - **CI.** No workflow yet, by choice — rapid iteration until the shape stops
   moving. Until then the pre-commit hooks are the entire safety net, which is why
   `uv run pre-commit install` is not optional.
+  *(Superseded 2026-08-06: all ten phases are built, so the shape has stopped
+  moving, and the gap has already produced a miss — `main` was carrying ten
+  files that fail `ruff format --check`, which the hook exists to prevent. Now
+  tracked as [#20](https://github.com/evanwtf/gmail-archive/issues/20).)*
 - **Attachment extraction default.** Answered by the survey: extracting every
   attachment adds roughly a quarter to the blob store, not the doubling that
   motivated making it a knob, and only ~6% of attachment parts are byte-identical
@@ -626,3 +631,85 @@ specified in [plan.md](plan.md#phase-9--read-only-imap-server).
 uv run pytest                 # 208 passed, 41 skipped (integration), 1 deselected
 uv run ruff check . && uv run mypy    # clean
 ```
+
+## Phase 10 — Wrap up — complete
+
+Tracked in [issue #9](https://github.com/evanwtf/gmail-archive/issues/9);
+specified in [plan.md](plan.md#phase-10--wrap-up).
+
+### What was built
+
+- **`README.md`** — quick start, the full workflow from schema to IMAP, a CLI
+  reference table, an architecture diagram, and the three-way split of where
+  project status lives.
+- **`docs/runbook.md`** — first-time setup, ingesting, resuming, verifying,
+  restoring a single message, exporting, the web UI and IMAP server, Postgres
+  bulk-load settings and how to revert them, backup and restore, troubleshooting.
+- **`docs/adr/`** — five ADRs for the decisions that actually shaped the code:
+  the content-addressed blob store, mboxrd unquoting, keyset pagination, pymap,
+  and the read-only posture.
+- **`AGENTS.md`** — repository structure, conventions, entry points, and common
+  tasks, written against the finished tree.
+
+### Not delivered
+
+Measured throughput. The plan asked for real numbers in the README and there are
+none; the msg/s and MiB/s counters added in `db2b89b` produce them, but no run
+against a realistic fixture on named hardware has been recorded.
+[#24](https://github.com/evanwtf/gmail-archive/issues/24).
+
+## Post-build review — 2026-08-06
+
+A full read of every module against its own documentation, at `db2b89b`. The
+recurring theme: **the places with no tests are the places that do not work.**
+Both of the serious defects below sit in code that the suite never executes, and
+both were found by reading, not by running.
+
+### Where the code disagrees with its own documentation
+
+| Finding | Where | Issue |
+|---|---|---|
+| Ingest passes `already_unquoted=True` for bytes nothing unquoted, so `raw_sha256`, every blob, and `body_text` all carry mbox `>From ` quoting — ADR-002 says the opposite, and the `unquote-ambiguous` warning it promises can never fire | `ingest.py:99` | [#10](https://github.com/evanwtf/gmail-archive/issues/10) |
+| IMAP login rejects the correct password. `Login.user_identity` is a property returning a fresh `Identity`, so `_add_user()` stores the hashed password on an object that is discarded immediately | `imap/backend.py:189` | [#11](https://github.com/evanwtf/gmail-archive/issues/11) |
+| `imap_unordered` (`73eb74e`) broke the resume checkpoint: it is written from the last result to *arrive*, not the furthest offset, so an interrupted run can skip messages permanently and silently | `ingest.py:552` | [#12](https://github.com/evanwtf/gmail-archive/issues/12) |
+| `imap-backfill` assigns UIDs by position, violating the "assigned once, never reused" invariant its own migration documents, and colliding with the `(folder_id, uid)` primary key on any re-run | `cli.py:570` | [#13](https://github.com/evanwtf/gmail-archive/issues/13) |
+| The HTMX `integrity` attribute is a fabricated placeholder, so the script fails SRI and never executes — and an offline archive should not be fetching it from unpkg at all | `web/templates/base.html:10` | [#14](https://github.com/evanwtf/gmail-archive/issues/14) |
+| Messages with no `Date` (~2.7% of the export) are in the database but unreachable by browsing: the keyset walk stops one page short of the NULL tail and shows nothing to say so | `web/app.py:170` | [#15](https://github.com/evanwtf/gmail-archive/issues/15) |
+| `export._requote` reimplements `parser.requote_mbox` and stops at two levels of quoting | `export.py:24` | [#18](https://github.com/evanwtf/gmail-archive/issues/18) |
+| `/raw/{sha256}` 500s on a malformed hash — `path_for` raises `ValueError`, not the `FileNotFoundError` the route catches | `web/app.py:302` | [#19](https://github.com/evanwtf/gmail-archive/issues/19) |
+| Compose cannot run the IMAP server: `GMAIL_ARCHIVE_IMAP_PASSWORD` is never passed into the container, no port is published, and the server binds container-loopback | `docker-compose.yml` | [#25](https://github.com/evanwtf/gmail-archive/issues/25) |
+
+### Gaps, not defects
+
+| Finding | Issue |
+|---|---|
+| Zero tests touch `gmail_archive.imap` — 640 lines, and Phase 9 was recorded as "verified" on the strength of a suite that never imports it | [#16](https://github.com/evanwtf/gmail-archive/issues/16) |
+| The web app opens a fresh Postgres connection per request; `psycopg_pool` is already a dependency and the IMAP backend already uses it properly | [#17](https://github.com/evanwtf/gmail-archive/issues/17) |
+| No CI. The pre-commit hooks are bypassable and only run where someone installed them; the 41 integration tests skip silently and therefore run nowhere | [#20](https://github.com/evanwtf/gmail-archive/issues/20) |
+| The Phase 6 gate's export round-trip test does not exist — it is exactly what would have caught #10 and #18 | [#21](https://github.com/evanwtf/gmail-archive/issues/21) |
+| The Phase 7 security tests assert that strings appear in headers rather than trying the attacks; the per-message remote-image opt-in was never built | [#22](https://github.com/evanwtf/gmail-archive/issues/22) |
+| `GmailApiSource` does not handle 403, which is how Gmail actually signals a rate limit | [#23](https://github.com/evanwtf/gmail-archive/issues/23) |
+
+### Fixed in the review pass
+
+- Ten files failed `uv run ruff format --check` on `main`, including
+  `ingest.py`, `query.py` and `export.py`. Reformatted. The `ruff-format`
+  pre-commit hook exists to make this impossible, which is the argument for #20.
+- `docs/runbook.md` carried commands that could not run as written: two
+  `docker compose run --rm web python -c ...` recipes that the image's
+  `python -m gmail_archive` entrypoint turns into an unknown-subcommand error
+  (one also using a `$1` placeholder psycopg does not accept), `web
+  gmail-archive imap` and `web gmail-archive imap-backfill` with a duplicated
+  command word, and export examples writing to `/tmp` inside a `--rm` container
+  where the output is destroyed on exit.
+- `docs/progress.md` claimed `166 passed, 20 skipped`; the suite is 208 and 41.
+- `AGENTS.md` claimed 15 test files and 249 tests; there are 14 and 249 is the
+  sum of two different runs.
+
+### What this says about the process
+
+Phase 9's "Verified" block quotes `208 passed` under a heading about the IMAP
+server, and not one of those 208 tests imports the IMAP server. That is the
+whole failure mode in one line: a green suite was read as evidence about code
+the suite does not touch. The fix is #16 and #20 together — write the tests, and
+run them somewhere that cannot be skipped.

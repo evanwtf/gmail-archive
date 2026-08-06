@@ -28,7 +28,7 @@ import email.utils
 import hashlib
 import re
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from enum import StrEnum
 from io import StringIO
 
@@ -50,6 +50,7 @@ class Warn(StrEnum):
     DATE_MISSING = "date-missing"
     DATE_UNPARSEABLE = "date-unparseable"
     DATE_IMPLAUSIBLE = "date-implausible"
+    DATE_TZ_OUT_OF_RANGE = "date-tz-out-of-range"
     MESSAGE_ID_MISSING = "message-id-missing"
     BODY_UNDECODABLE = "body-undecodable"
     CHARSET_UNKNOWN = "charset-unknown"
@@ -230,6 +231,14 @@ def _date(value: str | None, warnings: list[ParseWarning]) -> datetime | None:
     if parsed is None:
         warnings.append(ParseWarning(Warn.DATE_UNPARSEABLE))
         return None
+    # Postgres rejects timezone offsets outside ±15:59:59.
+    if parsed.tzinfo is not None:
+        offset = parsed.utcoffset()
+        if offset is not None and abs(offset) > timedelta(hours=15, minutes=59):
+            warnings.append(
+                ParseWarning(Warn.DATE_TZ_OUT_OF_RANGE, str(offset))
+            )
+            return None
     # A year outside this range is a broken header, not history. Kept rather
     # than discarded — the real export contains one — but flagged.
     if not (1970 <= parsed.year <= 2100):

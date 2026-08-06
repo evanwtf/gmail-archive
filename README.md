@@ -102,6 +102,12 @@ The web UI provides:
 
 ### 4. Connect via IMAP
 
+> **Not working yet.** Every login is rejected, including one with the
+> configured password ([#11](https://github.com/evanwtf/gmail-archive/issues/11)),
+> and compose has no way to run the server
+> ([#25](https://github.com/evanwtf/gmail-archive/issues/25)). The interface
+> below is what it will be, not what runs today.
+
 ```bash
 # Start the IMAP server
 GMAIL_ARCHIVE_IMAP_PASSWORD=yourpassword gmail-archive imap
@@ -185,7 +191,25 @@ Completed phases:
 | 6 | Verify, export, labels CLI commands |
 | 7 | Web UI (FastAPI, Jinja2, HTMX, nh3) |
 | 8 | Gmail API sync (interface + mocks) |
-| 9 | Read-only IMAP server (pymap) |
+| 9 | Read-only IMAP server (pymap) — built, does not work yet ([#8](https://github.com/evanwtf/gmail-archive/issues/8)) |
+| 10 | Wrap up (README, runbook, ADRs, AGENTS.md) |
+
+## Known defects
+
+All ten phases are built. A full-repo review on 2026-08-06 found that some of
+them do not do what their own documentation says. The ones that affect whether
+you should trust the archive:
+
+| What | Effect | Issue |
+|---|---|---|
+| Ingest never unquotes mboxrd | `raw_sha256`, blobs, and `body_text` all carry `>From ` quoting, contrary to ADR-002. Fixing it changes every hash, so it is a re-ingest, not a migration | [#10](https://github.com/evanwtf/gmail-archive/issues/10) |
+| Resume checkpoint is written from the last worker to finish, not the furthest offset | An interrupted-and-resumed ingest can skip messages silently | [#12](https://github.com/evanwtf/gmail-archive/issues/12) |
+| IMAP login rejects every credential | The IMAP server is unusable | [#11](https://github.com/evanwtf/gmail-archive/issues/11) |
+| `imap-backfill` renumbers UIDs by position | Cannot be re-run after a second ingest; aborts on a primary-key collision | [#13](https://github.com/evanwtf/gmail-archive/issues/13) |
+| Undated messages (~2.7%) are unreachable in the web UI | They are stored and searchable, but browsing stops before them | [#15](https://github.com/evanwtf/gmail-archive/issues/15) |
+
+The full list, including the test and CI gaps behind them, is at the end of
+[docs/progress.md](docs/progress.md#post-build-review--2026-08-06).
 
 ## Test suite
 

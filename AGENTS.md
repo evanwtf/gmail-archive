@@ -47,12 +47,12 @@ gmail-archive/
 ├── migrations/                 # Numbered .sql migrations
 │   ├── 0001_initial.sql        # Core schema (8 tables)
 │   └── 0002_imap.sql           # IMAP folder/UID model
-├── tests/                      # 15 test files, 249 tests
+├── tests/                      # 14 test files: 208 unit, 41 integration, 1 slow
 │   ├── conftest.py             # Shared fixtures
-│   ├── test_parser.py          # Parser + hypothesis property tests
-│   ├── test_ingest.py          # Ingest pipeline tests
-│   ├── test_sources.py         # Message source tests (30 tests, respx mocks)
-│   └── ...
+│   ├── test_parser.py          # Parser + hypothesis property tests (44)
+│   ├── test_ingest.py          # Ingest pipeline tests (10)
+│   ├── test_sources.py         # Message source tests (30, respx mocks)
+│   └── ...                     # NOTE: nothing covers imap/ — see issue #16
 ├── docs/
 │   ├── plan.md                 # Full project specification
 │   ├── progress.md             # Build log with findings
@@ -83,6 +83,19 @@ gmail-archive/
 - Integration tests gated on `GMAIL_ARCHIVE_TEST_DATABASE_URL`
 - Hypothesis property test: `parse()` never raises for any byte string
 - respx for HTTP mocking (no real network in tests)
+- **`src/gmail_archive/imap/` has no tests at all.** A green `pytest` run says
+  nothing about the IMAP server, and the server does not currently work. Do not
+  read the suite as evidence about that package (#16)
+
+### Before trusting this code
+
+A full-repo review on 2026-08-06 found defects in ingest, IMAP, export, and the
+web UI, several of which contradict the docstrings and ADRs in the same files.
+The findings and their issue numbers are tabulated at the end of
+`docs/progress.md` under "Post-build review". Read that table before changing
+`ingest.py`, `export.py`, or anything under `imap/` — in particular, ingest does
+**not** currently unquote mboxrd despite ADR-002 and every docstring saying it
+does (#10).
 
 ### Public repository hygiene
 - No personal data in fixtures (RFC 2606 domains only)

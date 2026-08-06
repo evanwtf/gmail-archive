@@ -52,6 +52,15 @@ docker compose run --rm -v ./data/mbox:/mbox:ro web ingest /mbox/All.mbox
 docker compose run --rm -v ./data/mbox:/mbox:ro web ingest /mbox/All.mbox --workers 4
 ```
 
+There is also a dedicated `ingest` service behind a compose profile, which
+already mounts `$MBOX_HOST_DIR` read-only at `/mbox` and reads
+`GMAIL_ARCHIVE_WORKERS` / `GMAIL_ARCHIVE_BATCH_SIZE` from `.env`, so no ad-hoc
+`-v` is needed:
+
+```bash
+docker compose --profile ingest run --rm ingest /mbox/All.mbox
+```
+
 The ingest pipeline is resumable: if it is killed mid-run, re-running the same
 command picks up where it left off. Re-ingesting the same file twice adds
 nothing via `ON CONFLICT DO NOTHING`.
@@ -73,26 +82,38 @@ docker compose run --rm -v ./data/mbox:/mbox:ro web ingest /mbox/All.mbox
 The checkpoint lives in the `ingest_runs` table. The pipeline reads the
 `checkpoint_offset` of the most recent incomplete run and starts from there.
 
-To force a full re-ingest (e.g. after a parser fix), you can delete the run:
+> **Known defect:** the checkpoint is written from the last result to arrive in
+> a batch, not the furthest-along offset, and workers return out of order. A run
+> that is interrupted and resumed can skip messages permanently. See
+> [#12](https://github.com/evanwtf/gmail-archive/issues/12) — until it is fixed,
+> prefer a full re-ingest over a resume for anything you care about.
+
+To force a full re-ingest (e.g. after a parser fix), drop the run record. Reach
+Postgres with `psql` in the database container rather than through the app
+container — the app image's entrypoint is `python -m gmail_archive`, so
+`docker compose run web python ...` is passed to the CLI as a subcommand name
+and fails:
 
 ```bash
-docker compose run --rm web python -c "
-import psycopg
-conn = psycopg.connect('host=postgres dbname=gmail_archive user=gmail_archive password=...')
-conn.execute('DELETE FROM ingest_runs WHERE status = \$1', ['interrupted'])
-conn.commit()
-"
+docker compose exec postgres \
+    psql -U gmail_archive -d gmail_archive \
+    -c "DELETE FROM ingest_runs WHERE status IN ('running', 'interrupted')"
 ```
 
-Or simply truncate and re-ingest:
+Deleting the run makes the next ingest start from offset 0. It does not delete
+any message rows: `ON CONFLICT DO NOTHING` means the messages already stored are
+recognised as duplicates and only the gap is filled.
+
+To start genuinely from scratch, truncate the tables **and** clear the blob
+store — truncating only the database leaves every blob on disk as an orphan:
 
 ```bash
-docker compose run --rm web python -c "
-import psycopg
-conn = psycopg.connect('host=postgres dbname=gmail_archive user=gmail_archive password=...')
-conn.execute('TRUNCATE messages, blobs, labels, attachments, message_sightings, ingest_runs, failed_messages CASCADE')
-conn.commit()
-"
+docker compose exec postgres \
+    psql -U gmail_archive -d gmail_archive \
+    -c "TRUNCATE messages, blobs, labels, attachments, message_sightings,
+        ingest_runs, failed_messages, imap_folders, imap_uids CASCADE"
+
+rm -rf ./data/blobs/*        # or $GMAIL_ARCHIVE_BLOB_HOST_PATH
 ```
 
 ## Verifying integrity
@@ -123,8 +144,12 @@ To extract a single message by its content hash:
 # Find the hash
 docker compose run --rm web search "some query"
 
-# Export as .eml
-docker compose run --rm web export /tmp/restore.eml --format eml --query "some query" --limit 1
+# Export as .eml. For --format eml the output path is a DIRECTORY (one
+# <sha256>.eml per message), and it must be a mounted volume — anything written
+# elsewhere in the container disappears with --rm.
+mkdir -p ./data/export
+docker compose run --rm -v ./data/export:/export web \
+    export /export --format eml --query "some query" --limit 1
 ```
 
 Or directly from the blob store:
@@ -136,19 +161,34 @@ cp data/blobs/ab/cdef1234... /tmp/message.eml
 
 ## Exporting messages
 
+The output path must land on a mounted volume. A path like `/tmp/export.mbox`
+is inside the container and is destroyed by `--rm` the moment the command ends.
+
 ```bash
+mkdir -p ./data/export
+
 # Export all messages as mbox
-docker compose run --rm web export /tmp/export.mbox
+docker compose run --rm -v ./data/export:/export web export /export/all.mbox
 
 # Export messages with a specific label
-docker compose run --rm web export /tmp/labeled.mbox --label "Important"
+docker compose run --rm -v ./data/export:/export web \
+    export /export/labeled.mbox --label "Important"
 
 # Export matching a search query
-docker compose run --rm web export /tmp/search.mbox --query "hello world"
+docker compose run --rm -v ./data/export:/export web \
+    export /export/search.mbox --query "hello world"
 
-# Export as individual .eml files
-docker compose run --rm web export /tmp/eml-dir --format eml --limit 100
+# Export as individual .eml files (the path is a directory in this mode)
+docker compose run --rm -v ./data/export:/export web \
+    export /export/eml --format eml --limit 100
 ```
+
+> **Known defect:** mbox export currently double-quotes `From ` lines, because
+> ingest stores mbox-quoted bytes while the exporter assumes unquoted ones. See
+> [#10](https://github.com/evanwtf/gmail-archive/issues/10) and
+> [#18](https://github.com/evanwtf/gmail-archive/issues/18). `.eml` export is
+> affected by the same root cause. Exports are readable but do not round-trip
+> byte-identically yet.
 
 ## Starting the web UI
 
@@ -162,11 +202,15 @@ gmail-archive serve --host 127.0.0.1 --port 8000
 
 ## Starting the IMAP server
 
-```bash
-# With Docker (requires GMAIL_ARCHIVE_IMAP_PASSWORD in .env)
-docker compose run --rm -p 1143:1143 web gmail-archive imap
+> **The IMAP server does not work today.** Every login is rejected, including
+> one with the configured password —
+> [#11](https://github.com/evanwtf/gmail-archive/issues/11). Compose also has no
+> way to run it: the password is never passed into the container and no port is
+> published — [#25](https://github.com/evanwtf/gmail-archive/issues/25). The
+> commands below are the intended interface, not a working procedure.
 
-# Or run directly
+```bash
+# Directly, outside Docker
 GMAIL_ARCHIVE_IMAP_PASSWORD=yourpassword gmail-archive imap
 
 # With a custom user
@@ -180,8 +224,9 @@ gmail-archive imap --user myuser --password mypass
 #   Password: as configured
 ```
 
-**Note:** The IMAP server binds to 127.0.0.1 by default. Use `--host 0.0.0.0`
-to expose it to other machines on the network.
+**Note:** the server binds 127.0.0.1 by default. `--host 0.0.0.0` exposes it to
+the network — which, with one shared password and no TLS, should be a
+deliberate choice rather than the way you get it working inside a container.
 
 ## Backfilling IMAP data
 
@@ -189,12 +234,19 @@ After the initial ingest, run the IMAP backfill to compute envelope and
 bodystructure for all messages and assign UIDs per folder:
 
 ```bash
-docker compose run --rm web gmail-archive imap-backfill
+docker compose run --rm web imap-backfill
 ```
 
-This is a one-time operation. It reads every message from the blob store,
-parses it with pymap's MIME parser, and stores the results in the database.
-Subsequent IMAP FETCH responses use the cached data.
+It reads every message from the blob store, parses it with pymap's MIME parser,
+and stores the results in the database. Subsequent IMAP FETCH responses use the
+cached data.
+
+> **Do not re-run this after a second ingest.** The envelope/bodystructure half
+> is safe to repeat (it skips rows that already have both), but the UID half
+> assigns UIDs by position and collides with the `(folder_id, uid)` primary key
+> as soon as the message set has changed, aborting partway through with earlier
+> folders already committed. See
+> [#13](https://github.com/evanwtf/gmail-archive/issues/13).
 
 ## Postgres bulk-load settings
 
@@ -270,10 +322,18 @@ docker compose run --rm web verify
 
 ### "GMAIL_ARCHIVE_DATABASE_URL is not set"
 
-The database URL is required by most commands. Set it in `.env`:
+The database URL is required by every command that touches Postgres.
 
-```
-GMAIL_ARCHIVE_DATABASE_URL=postgres://gmail_archive:password@postgres:5432/gmail_archive
+Inside Docker it is **not** read from `.env` directly — `docker-compose.yml`
+builds it from `POSTGRES_PASSWORD` and injects it into the container. If you see
+this error from a compose command, `POSTGRES_PASSWORD` is unset or empty.
+
+Outside Docker, export it yourself, pointing at whatever host and port Postgres
+is reachable on (`localhost:5432` needs the `ports:` block in
+`docker-compose.yml` uncommented):
+
+```bash
+export GMAIL_ARCHIVE_DATABASE_URL=postgresql://gmail_archive:password@localhost:5432/gmail_archive
 ```
 
 ### Container exits immediately
