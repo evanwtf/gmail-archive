@@ -58,9 +58,13 @@ async def add_security_headers(request: Request, call_next: Any) -> Response:
     messages. The sandboxed iframe in message.html is the second layer.
     """
     response: Response = await call_next(request)
+    # 'self' throughout: htmx is vendored into /static, so no origin outside
+    # this app needs to be reachable for a page to render. The duplicate
+    # <meta http-equiv> copy of this policy was removed — one policy, one
+    # place, no drift.
     response.headers["Content-Security-Policy"] = (
         "default-src 'self'; "
-        "script-src 'self' https://unpkg.com/htmx.org@2.0.4; "
+        "script-src 'self'; "
         "img-src 'self' data:; "
         "style-src 'self' 'unsafe-inline'; "
         "frame-ancestors 'none'"

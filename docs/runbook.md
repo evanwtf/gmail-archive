@@ -65,6 +65,28 @@ The ingest pipeline is resumable: if it is killed mid-run, re-running the same
 command picks up where it left off. Re-ingesting the same file twice adds
 nothing via `ON CONFLICT DO NOTHING`.
 
+### After a large ingest: vacuum and analyze
+
+**Do this before judging query performance.** A bulk ingest leaves the planner
+working from statistics gathered when the tables were small or empty, and it
+will pick bad plans for search — full scans where an index scan was available.
+Symptom: searches take seconds, and the same search is fast the second time
+but a new term is slow again.
+
+```bash
+docker compose exec postgres \
+    psql -U gmail_archive -d gmail_archive \
+    -c "vacuum (analyze) messages, blobs, labels, attachments"
+```
+
+Measured on a 277k-message archive: ~17 seconds to run, and it took search
+from multi-second to well under 100ms. Autovacuum gets there eventually, but
+"eventually" is after you have already formed an opinion about how slow the
+archive is.
+
+The vacuum also builds the visibility map, which is what lets aggregate
+queries use index-only scans rather than reading the heap.
+
 ### Tuning ingest performance
 
 For the initial import of a large archive, you can temporarily tune Postgres

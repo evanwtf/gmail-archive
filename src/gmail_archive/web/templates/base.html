@@ -3,13 +3,14 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta http-equiv="Content-Security-Policy"
-        content="default-src 'self'; script-src 'self' https://unpkg.com/htmx.org@2.0.4; img-src 'self' data:; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'">
   <title>{% block title %}gmail-archive{% endblock %}</title>
   <link rel="stylesheet" href="/static/style.css">
-  <script src="https://unpkg.com/htmx.org@2.0.4"
-          integrity="sha384-HGfztofotfshcF7+8n44JQL2oJN4B7X+JUFqk1vL4C3xL4G9CQZ4k1Sd5F6F5F"
-          crossorigin="anonymous"></script>
+  {# Vendored, not from a CDN. This was a render-blocking cross-origin fetch
+     on every page load, in an archive whose whole point is working offline —
+     and it never even ran, because the integrity hash was truncated and so
+     failed the SRI check. Local and same-origin: no third party, no SRI
+     needed, no request to block on. `defer` so it cannot block parsing. #}
+  <script src="/static/htmx.min.js" defer></script>
   {% block extra_head %}{% endblock %}
 </head>
 <body>

@@ -51,6 +51,32 @@ class TestSecurityHeaders:
         assert "img-src 'self' data:" in csp
         assert "frame-ancestors 'none'" in csp
 
+    def test_csp_names_no_external_origin(self) -> None:
+        # The assertion above is a substring match, and passed for two months
+        # while the policy read "script-src 'self' https://unpkg.com/...".
+        # This one tests the property that was actually intended.
+        from gmail_archive.web.app import app as _app
+
+        client = TestClient(_app)
+        csp = client.get("/healthz").headers["Content-Security-Policy"]
+        assert "http://" not in csp
+        assert "https://" not in csp
+
+    def test_no_template_loads_a_remote_resource(self) -> None:
+        # An archive that must work offline cannot depend on a CDN. This is a
+        # property of the templates, so check them rather than one response.
+        from pathlib import Path
+
+        import gmail_archive.web as web_pkg
+
+        templates_dir = Path(web_pkg.__file__).parent / "templates"
+        offenders = [
+            path.name
+            for path in templates_dir.glob("*.html")
+            if "http://" in path.read_text() or "https://" in path.read_text()
+        ]
+        assert offenders == [], f"templates fetch remote resources: {offenders}"
+
     def test_nosniff_header(self, client: TestClient) -> None:
         assert client.get("/healthz").headers["X-Content-Type-Options"] == "nosniff"
 
