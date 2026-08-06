@@ -11,11 +11,15 @@ dependencies = [
     "jinja2>=3.1",
     "nh3>=0.2",
     "psycopg[binary,pool]>=3.2",
+    "pymap>=0.36.7",
     "uvicorn[standard]>=0.34",
 ]
 
 [project.scripts]
 gmail-archive = "gmail_archive.cli:main"
+
+[project.entry-points."pymap.backend"]
+gmail-archive = "gmail_archive.imap:GmailArchiveBackend"
 
 [dependency-groups]
 dev = [

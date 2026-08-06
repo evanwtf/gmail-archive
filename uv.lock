@@ -160,6 +160,7 @@ dependencies = [
     { name = "jinja2" },
     { name = "nh3" },
     { name = "psycopg", extra = ["binary", "pool"] },
+    { name = "pymap" },
     { name = "uvicorn", extra = ["standard"] },
 ]
 
@@ -184,6 +185,7 @@ requires-dist = [
     { name = "jinja2", specifier = ">=3.1" },
     { name = "nh3", specifier = ">=0.2" },
     { name = "psycopg", extras = ["binary", "pool"], specifier = ">=3.2" },
+    { name = "pymap", specifier = ">=0.36.7" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.34" },
 ]
 
@@ -596,6 +598,18 @@ wheels = [
 ]
 
 [[package]]
+name = "proxy-protocol"
+version = "0.11.3"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/32/bc/afb0cf168826cf04e58d6ceb1e26ad07875ac7df1bba06834711542eab68/proxy_protocol-0.11.3.tar.gz", hash = "sha256:a9a1bd7bd90bfa82444a6bfc7cf567fa0a4d4144c9cadf392b8736ba651a662c", size = 31371, upload-time = "2024-04-27T18:59:55.218Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/1c/f1/ff6a0ee39964776792a38b638ac11cb0a72fa2704fc9cd158c7409716317/proxy_protocol-0.11.3-py3-none-any.whl", hash = "sha256:77d541828aed30c5d9eea9c4c9af1dd85c2c4a2f829e0ecb003cb978f738a3f1", size = 32611, upload-time = "2024-04-27T18:59:56.456Z" },
+]
+
+[[package]]
 name = "psycopg"
 version = "3.3.4"
 source = { registry = "https://pypi.org/simple" }
@@ -734,6 +748,31 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/c3/b2/bc9c9196916376152d655522fdcebac55e66de6603a76a02bca1b6414f6c/pygments-2.20.0.tar.gz", hash = "sha256:6757cd03768053ff99f3039c1a36d6c0aa0b263438fcab17520b30a303a82b5f", size = 4955991, upload-time = "2026-03-29T13:29:33.898Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/f4/7e/a72dd26f3b0f4f2bf1dd8923c85f7ceb43172af56d63c7383eb62b332364/pygments-2.20.0-py3-none-any.whl", hash = "sha256:81a9e26dd42fd28a23a2d169d86d7ac03b46e2f8b59ed4698fb4785f946d0176", size = 1231151, upload-time = "2026-03-29T13:29:30.038Z" },
+]
+
+[[package]]
+name = "pymap"
+version = "0.36.7"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "proxy-protocol" },
+    { name = "pysasl" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/36/d0/4b39896c44a508556a32c95d53d88137f812545379ba5ba4189b4d41d842/pymap-0.36.7.tar.gz", hash = "sha256:73743598e4a1cfbbde0f216a92e4d33cdf417bf9b7ac8854c037214444e54ad7", size = 176619, upload-time = "2024-04-27T18:59:52.809Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/72/22/50f025da5bc91d0dd585a64183c927a3b8c6d01f21aef6adb2a1e970d167/pymap-0.36.7-py3-none-any.whl", hash = "sha256:9ec1326119d2bba86a531401bfa1ecfb63d8e188ce23ec0c71557a28af49d25b", size = 215089, upload-time = "2024-04-27T18:59:50.216Z" },
+]
+
+[[package]]
+name = "pysasl"
+version = "1.2.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/a2/81/0f67bed0f17a2ce439b0cd9daad856791f471134a93deef4677095e98368/pysasl-1.2.0.tar.gz", hash = "sha256:5141cd8cfa0b3667ec114aded60fb17313496ba10603ffdbd7feeac7146ae7a1", size = 16696, upload-time = "2023-07-19T03:34:06.83Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/82/fc/d523b85287bac9e86d9134107b831e6a0a5317e3e92bb52c56e3900f32af/pysasl-1.2.0-py3-none-any.whl", hash = "sha256:4bd65b0342f2a04343501d3d192faf20a09a39b3412f3d383fd6437d62f96fe4", size = 21494, upload-time = "2023-07-19T03:34:07.735Z" },
 ]
 
 [[package]]

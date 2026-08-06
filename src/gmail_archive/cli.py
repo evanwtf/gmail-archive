@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
+from typing import Any
 
 import click
 import psycopg
@@ -338,13 +339,21 @@ def export(
     with psycopg.connect(settings.database_url) as conn:
         if fmt == "mbox":
             count = export_mbox(
-                conn, store, output,
-                label=label, query=query, limit=limit,
+                conn,
+                store,
+                output,
+                label=label,
+                query=query,
+                limit=limit,
             )
         else:
             count = export_eml(
-                conn, store, output,
-                label=label, query=query, limit=limit,
+                conn,
+                store,
+                output,
+                label=label,
+                query=query,
+                limit=limit,
             )
 
     click.echo(
@@ -367,10 +376,267 @@ def labels() -> None:
 
     click.echo(
         json.dumps(
-            [
-                {"label": lb.label, "message_count": lb.message_count}
-                for lb in result
-            ],
+            [{"label": lb.label, "message_count": lb.message_count} for lb in result],
             indent=2,
         )
     )
+
+
+@main.command()
+@click.option("--host", default="127.0.0.1", show_default=True)
+@click.option("--port", default=1143, show_default=True, type=int)
+@click.option(
+    "--user",
+    default="archive",
+    show_default=True,
+    help="IMAP login username",
+)
+@click.option(
+    "--password",
+    default=None,
+    help="IMAP login password (default: $GMAIL_ARCHIVE_IMAP_PASSWORD)",
+)
+def imap(host: str, port: int, user: str, password: str | None) -> None:
+    """Run the read-only IMAP server.
+
+    Serves archived messages over IMAP, mapping Gmail labels to folders.
+    Connect with any IMAP client (Thunderbird, mutt, etc.) using the
+    configured username and password.
+    """
+    import asyncio
+
+    from gmail_archive.imap import GmailArchiveBackend
+
+    settings = Settings.from_env()
+    if not settings.database_url:
+        click.echo("GMAIL_ARCHIVE_DATABASE_URL is not set", err=True)
+        raise click.Abort()
+
+    imap_password = password or settings.imap_password
+    if not imap_password:
+        click.echo(
+            "IMAP password not set. Provide --password or set"
+            " GMAIL_ARCHIVE_IMAP_PASSWORD.",
+            err=True,
+        )
+        raise click.Abort()
+
+    # Build a minimal Namespace that pymap's config system expects.
+    from argparse import Namespace
+
+    args = Namespace(
+        host=host,
+        port=port,
+        debug=False,
+        pid_file=None,
+        set_uid=None,
+        set_gid=None,
+        logging_cfg=None,
+        skip_services=[],
+        passlib_cfg=None,
+        database_url=settings.database_url,
+        user=user,
+        password=imap_password,
+        tls_cert=None,
+        tls_key=None,
+        tls_implicit=False,
+        tls_required=False,
+        auth_required=True,
+        login_delay=0,
+        login_max_failures=3,
+        login_failure_sleep=3,
+        disable_search_keys=frozenset(),
+    )
+
+    async def _run() -> None:
+        from pymap.imap import IMAPService
+        from pymap.main import run as _pymap_run
+
+        service_types = [IMAPService]
+        await _pymap_run(args, GmailArchiveBackend, service_types)
+
+    logger.info("Starting IMAP server on %s:%s", host, port)
+    asyncio.run(_run())
+
+
+@main.command("imap-backfill")
+def imap_backfill() -> None:
+    """Backfill envelope and bodystructure for all messages.
+
+    Reads every message from the blob store, parses it with pymap's MIME parser,
+    and stores the envelope and bodystructure in the database. Also assigns UIDs
+    for every (folder, message) pair.
+
+    Run this once after the initial ingest to enable efficient IMAP FETCH responses.
+    """
+    import json as _json
+
+    from gmail_archive.storage import BlobStore
+
+    settings = Settings.from_env()
+    if not settings.database_url:
+        click.echo("GMAIL_ARCHIVE_DATABASE_URL is not set", err=True)
+        raise click.Abort()
+
+    store = BlobStore(settings.blob_dir)
+
+    with psycopg.connect(settings.database_url) as conn:
+        # Ensure folders exist for all labels
+        conn.execute(
+            """
+            INSERT INTO imap_folders (name, uid_validity)
+            SELECT 'INBOX', 1
+            WHERE NOT EXISTS (SELECT 1 FROM imap_folders WHERE name = 'INBOX')
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO imap_folders (name, uid_validity)
+            SELECT DISTINCT l.label, 1
+            FROM labels l
+            WHERE NOT EXISTS (SELECT 1 FROM imap_folders f WHERE f.name = l.label)
+            """
+        )
+
+        # Get all messages that need backfill
+        rows = conn.execute(
+            """
+            SELECT m.raw_sha256, m.size_bytes
+            FROM messages m
+            WHERE m.envelope IS NULL OR m.bodystructure IS NULL
+            ORDER BY m.ingested_at
+            """
+        ).fetchall()
+
+        total = len(rows)
+        if total == 0:
+            click.echo("All messages already have envelope and bodystructure.")
+            return
+
+        click.echo(f"Backfilling {total} messages...")
+
+        from pymap.mime import MessageContent
+
+        done = 0
+        for raw_sha256, _size_bytes in rows:
+            raw_bytes = store.get(raw_sha256)
+            if raw_bytes is None:
+                logger.warning("Blob not found for %s, skipping", raw_sha256)
+                continue
+
+            content = MessageContent.parse(raw_bytes)
+            envelope = _json.dumps(_envelope_to_dict(content))
+            bodystructure = _json.dumps(_bodystructure_to_dict(content))
+
+            conn.execute(
+                "UPDATE messages SET envelope = %s::jsonb,"
+                " bodystructure = %s::jsonb WHERE raw_sha256 = %s",
+                (envelope, bodystructure, raw_sha256),
+            )
+
+            done += 1
+            if done % 100 == 0:
+                conn.commit()
+                click.echo(f"  {done}/{total}")
+
+        conn.commit()
+
+        # Assign UIDs for folders
+        click.echo("Assigning UIDs...")
+        folder_rows = conn.execute(
+            "SELECT id, name FROM imap_folders ORDER BY name"
+        ).fetchall()
+        for folder_id, folder_name in folder_rows:
+            label_filter = None if folder_name == "INBOX" else folder_name
+
+            # Get messages for this folder
+            if label_filter:
+                msg_rows = conn.execute(
+                    """
+                    SELECT l.raw_sha256
+                    FROM labels l
+                    WHERE l.label = %s
+                    ORDER BY l.raw_sha256
+                    """,
+                    (label_filter,),
+                ).fetchall()
+            else:
+                # INBOX: all messages
+                msg_rows = conn.execute(
+                    "SELECT raw_sha256 FROM messages ORDER BY raw_sha256"
+                ).fetchall()
+
+            # Assign UIDs for messages not yet mapped
+            for idx, (raw_sha256,) in enumerate(msg_rows, start=1):
+                conn.execute(
+                    """
+                    INSERT INTO imap_uids (folder_id, raw_sha256, uid)
+                    VALUES (%s, %s, %s)
+                    ON CONFLICT (folder_id, raw_sha256) DO NOTHING
+                    """,
+                    (folder_id, raw_sha256, idx),
+                )
+
+            conn.commit()
+            click.echo(f"  Folder '{folder_name}': {len(msg_rows)} UIDs assigned")
+
+    click.echo("Backfill complete.")
+
+
+def _envelope_to_dict(content: Any) -> dict[str, Any]:
+    """Convert a pymap EnvelopeStructure to a JSON-serializable dict."""
+    parsed = content.header.parsed
+    return {
+        "date": parsed.date,
+        "subject": parsed.subject,
+        "from": _addr_list(parsed.from_),
+        "sender": _addr_list(parsed.sender),
+        "reply_to": _addr_list(parsed.reply_to),
+        "to": _addr_list(parsed.to),
+        "cc": _addr_list(parsed.cc),
+        "bcc": _addr_list(parsed.bcc),
+        "in_reply_to": parsed.in_reply_to,
+        "message_id": parsed.message_id,
+    }
+
+
+def _bodystructure_to_dict(content: Any) -> dict[str, Any]:
+    """Convert a pymap BodyStructure to a JSON-serializable dict."""
+    return _body_part(content)
+
+
+def _body_part(msg: Any) -> dict[str, Any]:
+    """Recursively convert a MIME part to a dict."""
+    maintype = msg.body.content_type.maintype
+    subtype = msg.body.content_type.subtype
+    params = dict(msg.body.content_type.params)
+    parsed = msg.header.parsed
+
+    result: dict[str, Any] = {
+        "type": f"{maintype}/{subtype}",
+        "params": params,
+    }
+
+    if maintype == "multipart":
+        result["parts"] = [_body_part(part) for part in msg.body.nested]
+    else:
+        if maintype == "text":
+            result["lines"] = msg.lines
+        result["size"] = len(msg)
+        result["encoding"] = parsed.content_transfer_encoding
+        result["id"] = parsed.content_id
+        result["description"] = parsed.content_description
+
+    return result
+
+
+def _addr_list(addrs: Any) -> list[dict[str, Any] | None]:
+    """Convert an address list to JSON."""
+    if not addrs:
+        return []
+    return [
+        {"name": a.name, "mailbox": a.mailbox, "host": a.host, "addr": a.addr}
+        if hasattr(a, "addr")
+        else None
+        for a in addrs
+    ]

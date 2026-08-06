@@ -26,6 +26,7 @@ class Settings:
     workers: int
     batch_size: int
     log_level: str
+    imap_password: str
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -37,4 +38,5 @@ class Settings:
             workers=_int_env("GMAIL_ARCHIVE_WORKERS", os.cpu_count() or 1),
             batch_size=_int_env("GMAIL_ARCHIVE_BATCH_SIZE", 1000),
             log_level=os.environ.get("GMAIL_ARCHIVE_LOG_LEVEL", "INFO"),
+            imap_password=os.environ.get("GMAIL_ARCHIVE_IMAP_PASSWORD", ""),
         )
