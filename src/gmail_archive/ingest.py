@@ -526,12 +526,15 @@ def ingest(
             # main loop can write batches and log progress immediately rather
             # than waiting for all workers to complete.
             _t0 = datetime.now(UTC)
+            _batch_t0 = _t0
+            _batch_bytes = 0
             bytes_processed = 0
             for result in pool.imap_unordered(
                 _worker_task_tuple, tasks, chunksize=1
             ):
                 messages_seen += 1
                 bytes_processed += result.length
+                _batch_bytes += result.length
                 batch.append(result)
 
                 if (
@@ -554,19 +557,22 @@ def ingest(
                         conn, run_id, last_offset,
                         messages_seen, messages_new, failures,
                     )
-                    elapsed = (datetime.now(UTC) - _t0).total_seconds()
-                    rate = messages_seen / elapsed if elapsed > 0 else 0
-                    byte_rate = (
-                        bytes_processed / elapsed / 1024 / 1024
-                        if elapsed > 0
+                    now = datetime.now(UTC)
+                    batch_elapsed = (now - _batch_t0).total_seconds()
+                    batch_rate = n_batch / batch_elapsed if batch_elapsed > 0 else 0
+                    batch_mibs = (
+                        _batch_bytes / batch_elapsed / 1024 / 1024
+                        if batch_elapsed > 0
                         else 0
                     )
                     logger.info(
                         "checkpoint: %d/%d messages, %d new, %d failures "
                         "(%.0f msg/s, %.1f MiB/s)",
                         messages_seen, total, messages_new, failures,
-                        rate, byte_rate,
+                        batch_rate, batch_mibs,
                     )
+                    _batch_t0 = now
+                    _batch_bytes = 0
                     batch = []
 
         # Flush remaining batch.
