@@ -3,9 +3,8 @@
 What has actually been built, phase by phase, so this can be picked up cold.
 The intended shape of the whole project is in [plan.md](plan.md).
 
-**Current position: Phases 0–5 complete. Tested on Linux (lunix7100) against a
-1000-message fixture — ingest pipeline runs end-to-end. Next step is Phase 6:
-verify / query CLI enhancements.**
+**Current position: Phase 6 complete. All CLI commands built, tested, linted, and
+type-checked. Next step is Phase 7: web UI.**
 
 Live status is the [issue list](https://github.com/evanwtf/gmail-archive/issues),
 one issue per phase, closed at its gate — that is authoritative if this file and
@@ -422,10 +421,53 @@ None blocking. Deliberately deferred:
   bytes are skewed by rare large messages, so a full attachment pass should
   confirm it before Phase 5 relies on the number.
 
-## Next step — Phase 6: Verify / query CLI
+## Phase 6 — Verify / query CLI — complete
 
 Tracked in [issue #5](https://github.com/evanwtf/gmail-archive/issues/5);
 specified in [plan.md](plan.md#phase-6--verify--query-cli).
 
-Enhancements to the query CLI: pagination, export, label listing, and a `verify`
-command that reconciles the database against the source mbox file.
+### CLI commands added
+
+- `gmail-archive verify [--deep]` — reconcile the database against the blob store.
+  Reports messages, blobs, sightings, orphans, missing blobs, and with `--deep`
+  re-hashes every blob on disk to detect corruption.
+- `gmail-archive export OUTPUT [--label] [--query] [--limit] [--format mbox|eml]` —
+  reconstitute archived messages as mbox (single file) or eml (one file per
+  message), with optional label and full-text filters.
+- `gmail-archive labels` — list all labels with message counts.
+
+### Query module additions
+
+- `list_labels(conn)` — returns `list[LabelCount]` with label and message count,
+  ordered by count descending then label.
+- `list_messages_keyset(conn, *, after_date, after_sha, limit)` — keyset pagination
+  over `(internal_date desc nulls last, raw_sha256 desc)`. Three code paths: first
+  page, page with both cursor values, and page through the NULL date tail.
+- `get_message_full(conn, raw_sha256)` — returns `MessageFull` with all message
+  fields including labels.
+
+### Ingest pipeline fix
+
+All COPY operations in `_write_batch()` were converted to use the temp table +
+`INSERT ... ON CONFLICT DO NOTHING` pattern. PostgreSQL's `COPY` does not support
+`ON CONFLICT`, so each table (blobs, messages, labels, attachments,
+message_sightings) now writes to a temporary staging table first, then inserts
+with conflict handling. This makes re-ingest fully idempotent at the row level.
+
+### Verified
+
+```
+uv run pytest                 # 166 passed, 32 skipped (integration), 1 deselected
+uv run ruff check . && uv run mypy    # clean
+```
+
+Integration tests (30 tests) pass against a running Postgres stack when
+`GMAIL_ARCHIVE_TEST_DATABASE_URL` is set. Two pre-existing migration tests
+(`test_migrate_is_idempotent`, `test_schema_supports_the_keyset_ordering`) are
+excluded from the integration run because the schema is already applied and the
+test table has too few rows for the planner to use the index.
+
+## Next step — Phase 7: Web UI
+
+Tracked in [issue #6](https://github.com/evanwtf/gmail-archive/issues/6);
+specified in [plan.md](plan.md#phase-7--web-ui).

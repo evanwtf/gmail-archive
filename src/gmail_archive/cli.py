@@ -246,3 +246,131 @@ def search(query: tuple[str, ...], limit: int, offset: int) -> None:
             indent=2,
         )
     )
+
+
+@main.command()
+@click.option("--deep", is_flag=True, help="Re-hash every blob on disk")
+def verify(deep: bool) -> None:
+    """Verify archive integrity.
+
+    Reconciles the database against the blob store and message sightings.
+    With --deep, re-hashes every blob on disk against its sha256 filename.
+    """
+    from gmail_archive.storage import BlobStore
+    from gmail_archive.verify import verify as _verify
+
+    settings = Settings.from_env()
+    if not settings.database_url:
+        click.echo("GMAIL_ARCHIVE_DATABASE_URL is not set", err=True)
+        raise click.Abort()
+
+    store = BlobStore(settings.blob_dir)
+    with psycopg.connect(settings.database_url) as conn:
+        report = _verify(conn, store, deep=deep)
+
+    click.echo(
+        json.dumps(
+            {
+                "messages_in_db": report.messages_in_db,
+                "sightings_in_db": report.sightings_in_db,
+                "blobs_in_db": report.blobs_in_db,
+                "blobs_on_disk": report.blobs_on_disk,
+                "orphaned_blobs": len(report.orphaned_blobs),
+                "orphaned_blob_list": report.orphaned_blobs[:20],
+                "missing_blobs": len(report.missing_blobs),
+                "missing_blob_list": report.missing_blobs[:20],
+                "deep_checked": report.deep_checked,
+                "deep_corrupt": len(report.deep_corrupt),
+                "deep_corrupt_list": report.deep_corrupt[:20],
+                "sighting_mismatch": report.sighting_mismatch,
+                "messages_without_sightings": report.messages_without_sightings,
+            },
+            indent=2,
+        )
+    )
+
+    if report.missing_blobs:
+        click.echo(
+            "WARNING: missing blobs detected — data loss may have occurred",
+            err=True,
+        )
+    if report.deep_corrupt:
+        click.echo(
+            "WARNING: corrupt blobs detected — content hash mismatch",
+            err=True,
+        )
+
+
+@main.command()
+@click.argument("output", type=click.Path(dir_okay=False, path_type=Path))
+@click.option("--label", default=None, help="Filter by label")
+@click.option("--query", default=None, help="Full-text search filter")
+@click.option("--limit", default=None, type=int, help="Max messages to export")
+@click.option(
+    "--format",
+    "fmt",
+    type=click.Choice(["mbox", "eml"]),
+    default="mbox",
+    show_default=True,
+    help="Output format: mbox (single file) or eml (one file per message)",
+)
+def export(
+    output: Path,
+    label: str | None,
+    query: str | None,
+    limit: int | None,
+    fmt: str,
+) -> None:
+    """Export archived messages.
+
+    OUTPUT is the output path. For mbox format, this is a single file. For eml
+    format, this is a directory (one .eml file per message).
+    """
+    from gmail_archive.export import export_eml, export_mbox
+    from gmail_archive.storage import BlobStore
+
+    settings = Settings.from_env()
+    if not settings.database_url:
+        click.echo("GMAIL_ARCHIVE_DATABASE_URL is not set", err=True)
+        raise click.Abort()
+
+    store = BlobStore(settings.blob_dir)
+    with psycopg.connect(settings.database_url) as conn:
+        if fmt == "mbox":
+            count = export_mbox(
+                conn, store, output,
+                label=label, query=query, limit=limit,
+            )
+        else:
+            count = export_eml(
+                conn, store, output,
+                label=label, query=query, limit=limit,
+            )
+
+    click.echo(
+        json.dumps({"format": fmt, "output": str(output), "count": count}, indent=2)
+    )
+
+
+@main.command()
+def labels() -> None:
+    """List all labels with message counts."""
+    from gmail_archive.query import list_labels as _list_labels
+
+    settings = Settings.from_env()
+    if not settings.database_url:
+        click.echo("GMAIL_ARCHIVE_DATABASE_URL is not set", err=True)
+        raise click.Abort()
+
+    with psycopg.connect(settings.database_url) as conn:
+        result = _list_labels(conn)
+
+    click.echo(
+        json.dumps(
+            [
+                {"label": lb.label, "message_count": lb.message_count}
+                for lb in result
+            ],
+            indent=2,
+        )
+    )

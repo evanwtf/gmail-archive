@@ -212,11 +212,23 @@ def _write_batch(
         # ── blobs ────────────────────────────────────────────────────────
         blob_rows = [(m["raw_sha256"], m["size_bytes"], "message") for m in meta]
         if blob_rows:
+            # COPY does not support ON CONFLICT, so we use a temp table as a
+            # staging area and then INSERT from it with ON CONFLICT DO NOTHING.
+            conn.execute(
+                "create temporary table _staging_blobs "
+                "(sha256 char(64), size_bytes bigint, kind text)"
+                " on commit drop"
+            )
             with conn.cursor().copy(
-                "copy blobs (sha256, size_bytes, kind) from stdin"
+                "copy _staging_blobs (sha256, size_bytes, kind) from stdin"
             ) as copy:
                 for blob_row in blob_rows:
                     copy.write_row(blob_row)
+            conn.execute(
+                "insert into blobs (sha256, size_bytes, kind)"
+                " select sha256, size_bytes, kind from _staging_blobs"
+                " on conflict do nothing"
+            )
 
         # ── messages ────────────────────────────────────────────────────
         msg_rows = [
@@ -243,8 +255,18 @@ def _write_batch(
             for m in meta
         ]
         if msg_rows:
+            conn.execute(
+                "create temporary table _staging_messages "
+                "(raw_sha256 char(64), size_bytes bigint, message_id text,"
+                " gmail_id text, thread_id text, subject text, from_addr text,"
+                " to_addrs text[], cc_addrs text[], bcc_addrs text[],"
+                " reply_to text, in_reply_to text, references_ids text[],"
+                " internal_date timestamptz, body_text text, body_html text,"
+                " search_text text, parse_warnings jsonb)"
+                " on commit drop"
+            )
             with conn.cursor().copy(
-                "copy messages ("
+                "copy _staging_messages ("
                 "raw_sha256, size_bytes, message_id, gmail_id, thread_id, "
                 "subject, from_addr, to_addrs, cc_addrs, bcc_addrs, "
                 "reply_to, in_reply_to, references_ids, internal_date, "
@@ -253,6 +275,20 @@ def _write_batch(
             ) as copy:
                 for msg_row in msg_rows:
                     copy.write_row(msg_row)
+            conn.execute(
+                "insert into messages ("
+                "raw_sha256, size_bytes, message_id, gmail_id, thread_id, "
+                "subject, from_addr, to_addrs, cc_addrs, bcc_addrs, "
+                "reply_to, in_reply_to, references_ids, internal_date, "
+                "body_text, body_html, search_text, parse_warnings"
+                ") select "
+                "raw_sha256, size_bytes, message_id, gmail_id, thread_id, "
+                "subject, from_addr, to_addrs, cc_addrs, bcc_addrs, "
+                "reply_to, in_reply_to, references_ids, internal_date, "
+                "body_text, body_html, search_text, parse_warnings"
+                " from _staging_messages"
+                " on conflict do nothing"
+            )
 
         # ── labels ──────────────────────────────────────────────────────
         label_rows = [
@@ -261,11 +297,21 @@ def _write_batch(
             for label in m["labels"]
         ]
         if label_rows:
+            conn.execute(
+                "create temporary table _staging_labels "
+                "(raw_sha256 char(64), label text)"
+                " on commit drop"
+            )
             with conn.cursor().copy(
-                "copy labels (raw_sha256, label) from stdin"
+                "copy _staging_labels (raw_sha256, label) from stdin"
             ) as copy:
                 for label_row in label_rows:
                     copy.write_row(label_row)
+            conn.execute(
+                "insert into labels (raw_sha256, label)"
+                " select raw_sha256, label from _staging_labels"
+                " on conflict do nothing"
+            )
 
         # ── attachments ──────────────────────────────────────────────────
         attach_rows = [
@@ -275,13 +321,29 @@ def _write_batch(
             for a in m["attachments"]
         ]
         if attach_rows:
+            conn.execute(
+                "create temporary table _staging_attachments "
+                "(raw_sha256 char(64), part_index integer, filename text,"
+                " mime_type text, size_bytes bigint, content_sha256 char(64),"
+                " blob_sha256 char(64))"
+                " on commit drop"
+            )
             with conn.cursor().copy(
-                "copy attachments (raw_sha256, part_index, filename, "
+                "copy _staging_attachments (raw_sha256, part_index, filename, "
                 "mime_type, size_bytes, content_sha256, blob_sha256) "
                 "from stdin"
             ) as copy:
                 for attach_row in attach_rows:
                     copy.write_row(attach_row)
+            conn.execute(
+                "insert into attachments "
+                "(raw_sha256, part_index, filename, mime_type, size_bytes,"
+                " content_sha256, blob_sha256)"
+                " select raw_sha256, part_index, filename, mime_type,"
+                " size_bytes, content_sha256, blob_sha256"
+                " from _staging_attachments"
+                " on conflict (raw_sha256, part_index) do nothing"
+            )
 
         # ── message_sightings ────────────────────────────────────────────
         sighting_rows = [
@@ -289,12 +351,25 @@ def _write_batch(
             for r, m in zip(successes, meta, strict=True)
         ]
         if sighting_rows:
+            conn.execute(
+                "create temporary table _staging_sightings "
+                "(raw_sha256 char(64), source_path text,"
+                " byte_offset bigint, byte_length bigint)"
+                " on commit drop"
+            )
             with conn.cursor().copy(
-                "copy message_sightings (raw_sha256, source_path, "
+                "copy _staging_sightings (raw_sha256, source_path, "
                 "byte_offset, byte_length) from stdin"
             ) as copy:
                 for sighting_row in sighting_rows:
                     copy.write_row(sighting_row)
+            conn.execute(
+                "insert into message_sightings "
+                "(raw_sha256, source_path, byte_offset, byte_length)"
+                " select raw_sha256, source_path, byte_offset, byte_length"
+                " from _staging_sightings"
+                " on conflict (source_path, byte_offset) do nothing"
+            )
 
         # ── failed_messages ──────────────────────────────────────────────
         failed_rows = [
@@ -461,6 +536,7 @@ def ingest(
                 # Flush batch at batch_size boundary or at end.
                 if len(batch) >= n_batch:
                     _write_batch(conn, run_id, source_path, batch)
+                    conn.commit()
                     # Checkpoint at the last offset in the batch.
                     last_offset = batch[-1].offset + batch[-1].length
                     _checkpoint(
@@ -476,6 +552,7 @@ def ingest(
         # Flush remaining batch.
         if batch:
             _write_batch(conn, run_id, source_path, batch)
+            conn.commit()
             last_offset = batch[-1].offset + batch[-1].length
             _checkpoint(
                 conn, run_id, last_offset,
@@ -487,6 +564,7 @@ def ingest(
             conn, run_id, "complete",
             messages_seen, messages_new, failures,
         )
+        conn.commit()
 
         elapsed = (datetime.now(UTC) - start).total_seconds()
         logger.info(
@@ -510,6 +588,7 @@ def ingest(
                 conn, run_id, "interrupted",
                 messages_seen, messages_new, failures,
             )
+            conn.commit()
         except Exception:
             logger.exception("failed to mark run as interrupted")
         raise

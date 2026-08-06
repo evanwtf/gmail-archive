@@ -61,12 +61,43 @@ class MessageRow:
 
 
 @dataclass
+class MessageFull:
+    """Full message data including bodies, labels, and attachments."""
+
+    raw_sha256: str
+    size_bytes: int
+    message_id: str | None
+    thread_id: str | None
+    subject: str | None
+    from_addr: str | None
+    to_addrs: list[str]
+    cc_addrs: list[str]
+    bcc_addrs: list[str]
+    reply_to: str | None
+    in_reply_to: str | None
+    references_ids: list[str]
+    internal_date: datetime | None
+    body_text: str | None
+    body_html: str | None
+    labels: list[str]
+    parse_warnings: list[dict[str, str]]
+
+
+@dataclass
 class SearchResult:
     """Result of a full-text search."""
 
     messages: list[MessageRow]
     total: int
     query: str
+
+
+@dataclass
+class LabelCount:
+    """A label and how many messages carry it."""
+
+    label: str
+    message_count: int
 
 
 def stats(conn: psycopg.Connection[object]) -> ArchiveStats:
@@ -219,3 +250,129 @@ def get_message(
         internal_date=row[4],
         thread_id=row[5],
     )
+
+
+def get_message_full(
+    conn: psycopg.Connection[object],
+    raw_sha256: str,
+) -> MessageFull | None:
+    """Fetch a single message with all metadata, bodies, and labels.
+
+    Used by the export command to reconstitute messages.
+    """
+    raw = conn.execute(
+        "select"
+        "  m.raw_sha256, m.size_bytes, m.message_id, m.thread_id,"
+        "  m.subject, m.from_addr, m.to_addrs, m.cc_addrs, m.bcc_addrs,"
+        "  m.reply_to, m.in_reply_to, m.references_ids, m.internal_date,"
+        "  m.body_text, m.body_html, m.parse_warnings,"
+        "  coalesce((select json_agg(l.label) from labels l"
+        "    where l.raw_sha256 = m.raw_sha256), '[]'::json) as labels"
+        " from messages m"
+        " where m.raw_sha256 = %s",
+        (raw_sha256,),
+    ).fetchone()
+    if raw is None:
+        return None
+    row = _row(raw)
+    return MessageFull(
+        raw_sha256=str(row[0]),
+        size_bytes=int(row[1]),
+        message_id=row[2],
+        thread_id=row[3],
+        subject=row[4],
+        from_addr=row[5],
+        to_addrs=list(row[6]) if row[6] else [],
+        cc_addrs=list(row[7]) if row[7] else [],
+        bcc_addrs=list(row[8]) if row[8] else [],
+        reply_to=row[9],
+        in_reply_to=row[10],
+        references_ids=list(row[11]) if row[11] else [],
+        internal_date=row[12],
+        body_text=row[13],
+        body_html=row[14],
+        labels=list(row[16]) if row[16] else [],
+        parse_warnings=list(row[15]) if row[15] else [],
+    )
+
+
+def list_labels(
+    conn: psycopg.Connection[object],
+) -> list[LabelCount]:
+    """List all labels with their message counts, ordered by count descending."""
+    raw_rows = conn.execute(
+        "select label, count(*) as cnt"
+        " from labels"
+        " group by label"
+        " order by cnt desc, label"
+    ).fetchall()
+    return [
+        LabelCount(label=str(r[0]), message_count=int(r[1]))
+        for r in (_row(rr) for rr in raw_rows)
+    ]
+
+
+def list_messages_keyset(
+    conn: psycopg.Connection[object],
+    *,
+    after_date: datetime | None = None,
+    after_sha: str | None = None,
+    limit: int = 50,
+) -> list[MessageRow]:
+    """List messages using keyset pagination.
+
+    The ordering matches `messages_keyset_idx` exactly:
+    ``(internal_date desc nulls last, raw_sha256 desc)``.
+
+    Pass the ``internal_date`` and ``raw_sha256`` of the last message from the
+    previous page as ``after_date`` and ``after_sha`` to get the next page.
+    Pass ``None`` for both to get the first page.
+
+    Messages with NULL ``internal_date`` sort last (oldest first among
+    themselves, by sha256), so a keyset walk that starts from a real date
+    never reaches them. Use ``after_date=NULL, after_sha=<last_sha>`` to
+    page through the NULL tail.
+    """
+    if after_date is not None and after_sha is not None:
+        raw_rows = conn.execute(
+            "select"
+            "  raw_sha256, subject, from_addr, to_addrs, internal_date, thread_id"
+            " from messages"
+            " where (internal_date, raw_sha256) < (%s::timestamptz, %s)"
+            " order by internal_date desc nulls last, raw_sha256 desc"
+            " limit %s",
+            (after_date, after_sha, limit),
+        ).fetchall()
+    elif after_sha is not None:
+        # Page through the NULL-internal_date tail.
+        raw_rows = conn.execute(
+            "select"
+            "  raw_sha256, subject, from_addr, to_addrs, internal_date, thread_id"
+            " from messages"
+            " where internal_date is null and raw_sha256 < %s"
+            " order by internal_date desc nulls last, raw_sha256 desc"
+            " limit %s",
+            (after_sha, limit),
+        ).fetchall()
+    else:
+        # First page.
+        raw_rows = conn.execute(
+            "select"
+            "  raw_sha256, subject, from_addr, to_addrs, internal_date, thread_id"
+            " from messages"
+            " order by internal_date desc nulls last, raw_sha256 desc"
+            " limit %s",
+            (limit,),
+        ).fetchall()
+
+    return [
+        MessageRow(
+            raw_sha256=str(r[0]),
+            subject=r[1],
+            from_addr=r[2],
+            to_addrs=list(r[3]) if r[3] else [],
+            internal_date=r[4],
+            thread_id=r[5],
+        )
+        for r in (_row(rr) for rr in raw_rows)
+    ]

@@ -60,7 +60,7 @@ class TestEnsureRun:
     def test_creates_a_new_run(self) -> None:
         import psycopg
 
-        with psycopg.connect(DSN) as conn:
+        with psycopg.connect(DSN) as conn:  # type: ignore[arg-type]
             run_id, checkpoint = _ensure_run(conn, "/tmp/test.mbox")
             assert run_id > 0
             assert checkpoint == 0
@@ -70,7 +70,7 @@ class TestEnsureRun:
     def test_resumes_an_interrupted_run(self) -> None:
         import psycopg
 
-        with psycopg.connect(DSN) as conn:
+        with psycopg.connect(DSN) as conn:  # type: ignore[arg-type]
             # Create an interrupted run.
             conn.execute(
                 "insert into ingest_runs (source_path, status, checkpoint_offset) "
@@ -92,7 +92,7 @@ class TestRunBookkeeping:
     def test_checkpoint_updates_offset(self) -> None:
         import psycopg
 
-        with psycopg.connect(DSN) as conn:
+        with psycopg.connect(DSN) as conn:  # type: ignore[arg-type]
             row = conn.execute(
                 "insert into ingest_runs (source_path, status) "
                 "values ('/tmp/cp.mbox', 'running') returning id"
@@ -113,7 +113,7 @@ class TestRunBookkeeping:
     def test_finalize_marks_complete(self) -> None:
         import psycopg
 
-        with psycopg.connect(DSN) as conn:
+        with psycopg.connect(DSN) as conn:  # type: ignore[arg-type]
             row = conn.execute(
                 "insert into ingest_runs (source_path, status) "
                 "values ('/tmp/fin.mbox', 'running') returning id"
@@ -142,7 +142,7 @@ class TestWriteBatch:
         import psycopg
 
 
-        with psycopg.connect(DSN) as conn:
+        with psycopg.connect(DSN) as conn:  # type: ignore[arg-type]
             # Create a run.
             row = conn.execute(
                 "insert into ingest_runs (source_path, status) "
@@ -227,7 +227,7 @@ class TestWriteBatch:
     def test_writes_failed_results(self) -> None:
         import psycopg
 
-        with psycopg.connect(DSN) as conn:
+        with psycopg.connect(DSN) as conn:  # type: ignore[arg-type]
             row = conn.execute(
                 "insert into ingest_runs (source_path, status) "
                 "values ('/tmp/fail.mbox', 'running') returning id"
@@ -280,7 +280,7 @@ class TestIngest:
         assert report.run_id is not None
 
         # Verify in the database.
-        with psycopg.connect(DSN) as conn:
+        with psycopg.connect(DSN) as conn:  # type: ignore[arg-type]
             count = conn.execute("select count(*) from messages").fetchone()
             assert count is not None
             assert int(count[0]) >= 2
@@ -309,7 +309,7 @@ class TestIngest:
         assert second.messages_new == 0  # No new messages on re-ingest
         assert second.messages_seen == 1  # But we saw the message
 
-        with psycopg.connect(DSN) as conn:
+        with psycopg.connect(DSN) as conn:  # type: ignore[arg-type]
             count = conn.execute("select count(*) from messages").fetchone()
             assert count is not None
             assert int(count[0]) == 1
@@ -343,7 +343,7 @@ class TestIngest:
         assert report.messages_new == 1
         assert report.failures == 0
 
-        with psycopg.connect(DSN) as conn:
+        with psycopg.connect(DSN) as conn:  # type: ignore[arg-type]
             row = conn.execute(
                 "select parse_warnings from messages"
             ).fetchone()
