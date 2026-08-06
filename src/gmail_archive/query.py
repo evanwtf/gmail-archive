@@ -111,8 +111,12 @@ def stats(conn: psycopg.Connection[object]) -> ArchiveStats:
         "  (select count(*) from failed_messages) as total_failures,"
         "  (select count(*) from ingest_runs) as total_runs,"
         "  (select coalesce(sum(size_bytes), 0) from messages) as total_bytes,"
-        "  (select min(internal_date) from messages) as date_earliest,"
-        "  (select max(internal_date) from messages) as date_latest,"
+        "  (select min(internal_date) from messages"
+        "    where internal_date >= '1970-01-01'"
+        "    and internal_date < '2101-01-01') as date_earliest,"
+        "  (select max(internal_date) from messages"
+        "    where internal_date >= '1970-01-01'"
+        "    and internal_date < '2101-01-01') as date_latest,"
         "  (select coalesce(sum(size_bytes), 0) from blobs) as blob_bytes"
     ).fetchone()
     assert raw is not None
