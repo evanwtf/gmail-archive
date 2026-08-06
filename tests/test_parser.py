@@ -77,6 +77,39 @@ class TestNeverRaises:
     def test_known_nasty_inputs(self, raw: bytes) -> None:
         assert isinstance(parse(raw), ParsedMessage)
 
+    @pytest.mark.parametrize(
+        "header", ["Date", "Message-ID", "References", "In-Reply-To", "X-GM-THRID"]
+    )
+    def test_eight_bit_byte_in_a_structured_header(self, header: str) -> None:
+        """The bug three real messages found, generalised to every structured header.
+
+        `Message.get()` under compat32 returns an `email.header.Header` object,
+        not a str, when the raw header holds bytes it cannot decode as ASCII.
+        Anything downstream that calls `.split()` on it — `parsedate_to_datetime`
+        does — then dies with AttributeError.
+
+        The original 8-bit fixture put its bad byte in `Subject`, an
+        *unstructured* header nothing later tries to parse, which is exactly why
+        neither it nor the hypothesis property test caught this.
+        """
+        raw = f"{header}: ".encode() + b"\xe9\xa0 bad bytes\nSubject: s\n\nbody"
+        parsed = parse(raw)
+        assert isinstance(parsed, ParsedMessage)
+
+    @settings(max_examples=250, suppress_health_check=[HealthCheck.too_slow])
+    @given(st.binary(max_size=120))
+    def test_arbitrary_bytes_inside_a_date_header(self, blob: bytes) -> None:
+        # Targeted where undirected binary fuzzing has effectively no chance of
+        # landing: a syntactically real header whose *value* is arbitrary.
+        raw = b"Date: " + blob.replace(b"\n", b" ") + b"\nSubject: s\n\nbody"
+        assert isinstance(parse(raw), ParsedMessage)
+
+    @settings(max_examples=150, suppress_health_check=[HealthCheck.too_slow])
+    @given(st.binary(max_size=120))
+    def test_arbitrary_bytes_inside_a_labels_header(self, blob: bytes) -> None:
+        raw = b"X-Gmail-Labels: " + blob.replace(b"\n", b" ") + b"\n\nbody"
+        assert isinstance(parse(raw), ParsedMessage)
+
 
 class TestSanitisation:
     def test_nul_is_stripped_from_body(self) -> None:

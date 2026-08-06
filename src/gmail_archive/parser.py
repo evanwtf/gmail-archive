@@ -147,6 +147,30 @@ def _sanitize(text: str, warnings: list[ParseWarning]) -> str:
     return text
 
 
+def _header_str(value: object) -> str | None:
+    """Coerce a header value to `str`.
+
+    `Message.get()` under compat32 does **not** always return a string. When the
+    raw header contains bytes it cannot decode as ASCII it returns an
+    `email.header.Header` instance instead, and every type annotation that says
+    otherwise — including this module's, before it was corrected — is wrong.
+
+    Found the hard way: three messages out of 277,020 in a real export killed
+    `parse()` with `AttributeError: 'Header' object has no attribute 'split'`,
+    raised inside `parsedate_to_datetime`. Neither the hypothesis property test
+    nor the 8-bit-header fixture caught it, because both put their bad bytes in
+    an *unstructured* header (Subject) where nothing later calls `.split()`. The
+    hazard is an 8-bit byte in a *structured* header — Date, Message-ID — which
+    a downstream stdlib parser then treats as text.
+    """
+    if value is None or isinstance(value, str):
+        return value
+    try:
+        return str(value)
+    except Exception:
+        return None
+
+
 def _decode_header(value: str | None, warnings: list[ParseWarning]) -> str | None:
     """RFC 2047 decode, best effort. Never raises."""
     if value is None:
@@ -198,7 +222,9 @@ def _date(value: str | None, warnings: list[ParseWarning]) -> datetime | None:
         return None
     try:
         parsed = email.utils.parsedate_to_datetime(value)
-    except (ValueError, TypeError, OverflowError) as exc:
+    except Exception as exc:
+        # raises from depths no tuple of types reliably predicts, and a date is
+        # never worth failing a message for.
         warnings.append(ParseWarning(Warn.DATE_UNPARSEABLE, type(exc).__name__))
         return None
     if parsed is None:
@@ -268,7 +294,7 @@ def parse(raw: bytes, *, already_unquoted: bool = False) -> ParsedMessage:
         warnings.append(ParseWarning(Warn.STRUCTURE_UNPARSEABLE, type(exc).__name__))
         return parsed
 
-    parsed.subject = _decode_header(msg.get("Subject"), warnings)
+    parsed.subject = _decode_header(_header_str(msg.get("Subject")), warnings)
     from_addrs = _addresses(msg, "From")
     parsed.from_addr = from_addrs[0] if from_addrs else None
     parsed.to_addrs = _addresses(msg, "To")
@@ -277,28 +303,27 @@ def parse(raw: bytes, *, already_unquoted: bool = False) -> ParsedMessage:
     reply_to = _addresses(msg, "Reply-To")
     parsed.reply_to = reply_to[0] if reply_to else None
 
-    message_id = msg.get("Message-ID")
+    message_id = _header_str(msg.get("Message-ID"))
     if message_id is None:
         warnings.append(ParseWarning(Warn.MESSAGE_ID_MISSING))
     else:
-        parsed.message_id = str(message_id).strip()
+        parsed.message_id = message_id.strip()
 
-    parsed.in_reply_to = (
-        str(msg.get("In-Reply-To")).strip() if msg.get("In-Reply-To") else None
-    )
-    references = msg.get("References")
+    in_reply_to = _header_str(msg.get("In-Reply-To"))
+    parsed.in_reply_to = in_reply_to.strip() if in_reply_to else None
+    references = _header_str(msg.get("References"))
     if references:
-        parsed.references_ids = re.findall(r"<[^>]+>", str(references))
+        parsed.references_ids = re.findall(r"<[^>]+>", references)
 
     # Takeout supplies X-GM-THRID but no per-message Gmail id — confirmed
     # against a real export, where X-GM-MSGID appears on no message at all.
-    thread_id = msg.get("X-GM-THRID")
-    parsed.thread_id = str(thread_id).strip() if thread_id else None
-    gmail_id = msg.get("X-GM-MSGID")
-    parsed.gmail_id = str(gmail_id).strip() if gmail_id else None
+    thread_id = _header_str(msg.get("X-GM-THRID"))
+    parsed.thread_id = thread_id.strip() if thread_id else None
+    gmail_id = _header_str(msg.get("X-GM-MSGID"))
+    parsed.gmail_id = gmail_id.strip() if gmail_id else None
 
-    parsed.labels = _labels(msg.get("X-Gmail-Labels"), warnings)
-    parsed.internal_date = _date(msg.get("Date"), warnings)
+    parsed.labels = _labels(_header_str(msg.get("X-Gmail-Labels")), warnings)
+    parsed.internal_date = _date(_header_str(msg.get("Date")), warnings)
 
     text_chunks: list[str] = []
     html_chunks: list[str] = []
