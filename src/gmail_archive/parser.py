@@ -241,7 +241,10 @@ def _date(value: str | None, warnings: list[ParseWarning]) -> datetime | None:
     # Kept rather than discarded — the real export contains one — but flagged.
     _plausible_upper = datetime.now(UTC) + timedelta(days=90)
     _parsed_aware = parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
-    if not (1970 <= parsed.year <= _plausible_upper.year) or _parsed_aware > _plausible_upper:
+    if (
+        not (1970 <= parsed.year <= _plausible_upper.year)
+        or _parsed_aware > _plausible_upper
+    ):
         warnings.append(ParseWarning(Warn.DATE_IMPLAUSIBLE, str(parsed)))
     return parsed
 

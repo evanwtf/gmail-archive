@@ -135,17 +135,47 @@ def stats(conn: psycopg.Connection[object]) -> ArchiveStats:
     )
 
 
+#: Orderings `search()` will accept, mapped to SQL. A lookup, not interpolation:
+#: the caller's string selects a key and never reaches the query text.
+#:
+#: `date` matches `messages_keyset_idx` exactly, so it sorts from the index
+#: rather than the rank expression. Both orderings break ties on `raw_sha256`
+#: so a page boundary is stable across requests.
+SEARCH_SORTS: dict[str, str] = {
+    "relevance": (
+        "ts_rank(search_tsv, websearch_to_tsquery('english', %(q)s)) desc,"
+        " internal_date desc nulls last, raw_sha256 desc"
+    ),
+    "date": "internal_date desc nulls last, raw_sha256 desc",
+    "date-asc": "internal_date asc nulls last, raw_sha256 asc",
+}
+
+DEFAULT_SEARCH_SORT = "relevance"
+
+
 def search(
     conn: psycopg.Connection[object],
     query: str,
     *,
     limit: int = 50,
     offset: int = 0,
+    sort: str = DEFAULT_SEARCH_SORT,
 ) -> SearchResult:
     """Full-text search over messages using `websearch_to_tsquery`.
 
-    Returns messages ranked by relevance, with highlighted snippets.
+    Returns messages with highlighted snippets, ordered by `sort` — one of the
+    keys in `SEARCH_SORTS`. An unknown key raises `ValueError` rather than
+    quietly falling back, so a typo in a caller is loud.
+
+    Undated messages sort last under every ordering, including `date-asc`:
+    a missing `Date` is unknown, not old, and putting nulls first would open
+    every ascending search with the messages that have the least information.
     """
+    if sort not in SEARCH_SORTS:
+        raise ValueError(
+            f"unknown sort {sort!r}; expected one of {sorted(SEARCH_SORTS)}"
+        )
+
     if not query.strip():
         return SearchResult(messages=[], total=0, query=query)
 
@@ -172,15 +202,14 @@ def search(
         "  ts_headline("
         "    'english',"
         "    coalesce(subject, '') || ' ' || coalesce(search_text, ''),"
-        "    websearch_to_tsquery('english', %s),"
+        "    websearch_to_tsquery('english', %(q)s),"
         "    'MaxWords=40, MinWords=20, StartSel=[hl], StopSel=[/hl]'"
         "  ) as snippet"
         " from messages"
-        " where search_tsv @@ websearch_to_tsquery('english', %s)"
-        " order by ts_rank(search_tsv, websearch_to_tsquery('english', %s)) desc,"
-        "  internal_date desc nulls last, raw_sha256 desc"
-        " limit %s offset %s",
-        (query, query, query, limit, offset),
+        " where search_tsv @@ websearch_to_tsquery('english', %(q)s)"
+        f" order by {SEARCH_SORTS[sort]}"
+        " limit %(limit)s offset %(offset)s",
+        {"q": query, "limit": limit, "offset": offset},
     ).fetchall()
 
     messages = [

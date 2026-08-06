@@ -11,6 +11,8 @@ import os
 import pytest
 
 from gmail_archive.query import (
+    DEFAULT_SEARCH_SORT,
+    SEARCH_SORTS,
     ArchiveStats,
     LabelCount,
     get_message,
@@ -65,6 +67,36 @@ class TestStats:
             conn.execute("delete from blobs where sha256 = %s", (sha256,))
 
 
+class TestSearchSorts:
+    """No database needed: sort selection is resolved before any SQL runs."""
+
+    def test_default_sort_is_a_known_key(self) -> None:
+        assert DEFAULT_SEARCH_SORT in SEARCH_SORTS
+
+    def test_expected_sorts_are_offered(self) -> None:
+        assert set(SEARCH_SORTS) == {"relevance", "date", "date-asc"}
+
+    def test_unknown_sort_raises_before_touching_the_connection(self) -> None:
+        # conn=None proves the guard runs first: reaching SQL would AttributeError.
+        with pytest.raises(ValueError, match="unknown sort"):
+            search(None, "anything", sort="; drop table messages --")  # type: ignore[arg-type]
+
+    def test_no_sort_clause_interpolates_caller_input(self) -> None:
+        # The caller's string selects a key; only these fixed clauses reach SQL.
+        for clause in SEARCH_SORTS.values():
+            assert "%(q)s" in clause or "%" not in clause
+
+    def test_every_sort_breaks_ties_on_raw_sha256(self) -> None:
+        # Without a total order, two requests can disagree about page boundaries
+        # and OFFSET pagination silently skips or repeats rows.
+        for name, clause in SEARCH_SORTS.items():
+            assert "raw_sha256" in clause, name
+
+    def test_undated_messages_sort_last_in_every_ordering(self) -> None:
+        for name, clause in SEARCH_SORTS.items():
+            assert "nulls last" in clause, name
+
+
 @pytest.mark.integration
 @pytest.mark.skipif(not DSN, reason="needs GMAIL_ARCHIVE_TEST_DATABASE_URL")
 class TestSearch:
@@ -101,6 +133,77 @@ class TestSearch:
 
             conn.execute("delete from messages where raw_sha256 = %s", (sha256,))
             conn.execute("delete from blobs where sha256 = %s", (sha256,))
+
+    def test_sort_by_date_orders_newest_first(self) -> None:
+        import hashlib
+        from datetime import UTC, datetime
+
+        import psycopg
+
+        # Three matching messages, inserted in an order that is neither the
+        # date order nor its reverse, so a passing result cannot be luck.
+        rows = [
+            (
+                hashlib.sha256(b"sortable-b").hexdigest(),
+                datetime(2015, 6, 1, tzinfo=UTC),
+            ),
+            (
+                hashlib.sha256(b"sortable-c").hexdigest(),
+                datetime(2021, 6, 1, tzinfo=UTC),
+            ),
+            (
+                hashlib.sha256(b"sortable-a").hexdigest(),
+                datetime(2009, 6, 1, tzinfo=UTC),
+            ),
+        ]
+        undated = hashlib.sha256(b"sortable-undated").hexdigest()
+
+        with psycopg.connect(DSN) as conn:  # type: ignore[arg-type]
+            for sha, when in rows:
+                conn.execute(
+                    "insert into blobs (sha256, size_bytes, kind) "
+                    "values (%s, 9, 'message') on conflict do nothing",
+                    (sha,),
+                )
+                conn.execute(
+                    "insert into messages (raw_sha256, size_bytes, subject,"
+                    " search_text, internal_date)"
+                    " values (%s, 9, 'zorkmid', 'zorkmid', %s)"
+                    " on conflict do nothing",
+                    (sha, when),
+                )
+            conn.execute(
+                "insert into blobs (sha256, size_bytes, kind) "
+                "values (%s, 9, 'message') on conflict do nothing",
+                (undated,),
+            )
+            conn.execute(
+                "insert into messages (raw_sha256, size_bytes, subject,"
+                " search_text, internal_date)"
+                " values (%s, 9, 'zorkmid', 'zorkmid', null)"
+                " on conflict do nothing",
+                (undated,),
+            )
+
+            try:
+                newest = search(conn, "zorkmid", sort="date")
+                dates = [m.internal_date for m in newest.messages]
+                assert dates == sorted(
+                    (d for d in dates if d is not None), reverse=True
+                ) + [d for d in dates if d is None]
+                assert dates[0] == datetime(2021, 6, 1, tzinfo=UTC)
+                # An undated message must not lead a newest-first list.
+                assert dates[-1] is None
+
+                oldest = search(conn, "zorkmid", sort="date-asc")
+                asc = [m.internal_date for m in oldest.messages]
+                assert asc[0] == datetime(2009, 6, 1, tzinfo=UTC)
+                # ...nor an oldest-first one: unknown is not old.
+                assert asc[-1] is None
+            finally:
+                for sha in [r[0] for r in rows] + [undated]:
+                    conn.execute("delete from messages where raw_sha256 = %s", (sha,))
+                    conn.execute("delete from blobs where sha256 = %s", (sha,))
 
 
 @pytest.mark.integration

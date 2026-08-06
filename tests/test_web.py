@@ -78,6 +78,16 @@ class TestHtmlRoutesNoDb:
         response = client.get("/labels", headers={"Accept": "text/html"})
         assert response.status_code == 503
 
+    def test_unknown_sort_falls_back_instead_of_erroring(
+        self, client: TestClient
+    ) -> None:
+        # 503 means it got past sort validation and into the database call.
+        # A 500 would mean a hand-edited query string can crash the route.
+        response = client.get(
+            "/search?q=hello&sort=bogus", headers={"Accept": "text/html"}
+        )
+        assert response.status_code == 503
+
     def test_raw_returns_404_without_db(self, client: TestClient) -> None:
         # Raw download only touches the blob store, not the database.
         response = client.get("/raw/0" * 64)
@@ -119,6 +129,17 @@ class TestHtmlRoutesWithDb:
 
     def test_search_with_query(self, client: TestClient) -> None:
         response = client.get("/search?q=hello", headers={"Accept": "text/html"})
+        assert response.status_code == 200
+
+    def test_search_offers_sort_controls(self, client: TestClient) -> None:
+        response = client.get("/search?q=hello", headers={"Accept": "text/html"})
+        assert b"Newest first" in response.content
+        assert b"Oldest first" in response.content
+
+    def test_search_sort_by_date_is_accepted(self, client: TestClient) -> None:
+        response = client.get(
+            "/search?q=hello&sort=date", headers={"Accept": "text/html"}
+        )
         assert response.status_code == 200
 
     def test_labels_page_renders(self, client: TestClient) -> None:

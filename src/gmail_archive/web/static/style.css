@@ -250,7 +250,10 @@ h2 { font-size: 1.15rem; margin: 1.5rem 0 0.5rem; }
 
 .search-input:focus { outline: none; border-color: #1a73e8; }
 
-.result-count { margin-bottom: 1rem; font-size: 0.9rem; color: #555; }
+.result-count { margin-bottom: 0.25rem; font-size: 0.9rem; color: #555; }
+
+.sort-controls { margin-bottom: 1rem; font-size: 0.9rem; color: #555; }
+.sort-active { color: #202124; }
 
 /* ── Pagination ──────────────────────────────────────────────── */
 .pagination {

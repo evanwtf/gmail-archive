@@ -5,12 +5,26 @@
 
 <form action="/search" method="get" class="search-form">
   <input type="search" name="q" value="{{ query|default('', true) }}" placeholder="Search messages..." class="search-input" autofocus>
+  {# Carry the chosen ordering through a new search rather than silently resetting it. #}
+  <input type="hidden" name="sort" value="{{ sort|default('relevance', true) }}">
   <button type="submit" class="btn">Search</button>
 </form>
 
 {% if query %}
   {% if results %}
   <p class="result-count">{{ total }} result{{ 's' if total != 1 else '' }} for <strong>{{ query }}</strong></p>
+
+  {# Changing the sort resets offset: page 3 of one ordering is not page 3 of another. #}
+  <p class="sort-controls">Sort:
+    {% for key, label in [("relevance", "Relevance"), ("date", "Newest first"), ("date-asc", "Oldest first")] %}
+      {%- if sort == key -%}
+        <strong class="sort-active">{{ label }}</strong>
+      {%- else -%}
+        <a href="/search?q={{ query|urlencode }}&amp;limit={{ limit }}&amp;sort={{ key }}">{{ label }}</a>
+      {%- endif -%}
+      {{ " · " if not loop.last }}
+    {% endfor %}
+  </p>
   <table class="message-list">
     <thead>
       <tr>
@@ -35,10 +49,10 @@
   {% if offset > 0 or total > limit %}
   <div class="pagination">
     {% if offset > 0 %}
-    <a href="/search?q={{ query|urlencode }}&amp;offset={{ offset - limit }}&amp;limit={{ limit }}" class="prev-page">Previous</a>
+    <a href="/search?q={{ query|urlencode }}&amp;offset={{ offset - limit }}&amp;limit={{ limit }}&amp;sort={{ sort }}" class="prev-page">Previous</a>
     {% endif %}
     {% if offset + limit < total %}
-    <a href="/search?q={{ query|urlencode }}&amp;offset={{ offset + limit }}&amp;limit={{ limit }}" class="next-page">Next</a>
+    <a href="/search?q={{ query|urlencode }}&amp;offset={{ offset + limit }}&amp;limit={{ limit }}&amp;sort={{ sort }}" class="next-page">Next</a>
     {% endif %}
   </div>
   {% endif %}

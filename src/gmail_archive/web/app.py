@@ -19,6 +19,8 @@ from fastapi.templating import Jinja2Templates
 
 from gmail_archive.config import Settings
 from gmail_archive.query import (
+    DEFAULT_SEARCH_SORT,
+    SEARCH_SORTS,
     get_message_full,
     get_thread_messages,
     list_labels,
@@ -245,11 +247,20 @@ def search_page(
     q: str = "",
     offset: int = 0,
     limit: int = 50,
+    sort: str = DEFAULT_SEARCH_SORT,
 ) -> HTMLResponse:
-    """Full-text search with highlighted snippets."""
+    """Full-text search with highlighted snippets.
+
+    ``sort`` is one of ``relevance`` (default), ``date`` (newest first), or
+    ``date-asc``. An unrecognised value falls back to the default rather than
+    erroring — a hand-edited query string should not produce a 500.
+    """
+    if sort not in SEARCH_SORTS:
+        sort = DEFAULT_SEARCH_SORT
+
     try:
         with _get_conn() as conn:
-            result = search(conn, q, limit=limit, offset=offset)
+            result = search(conn, q, limit=limit, offset=offset, sort=sort)
     except psycopg.Error:
         return templates.TemplateResponse(
             request,
@@ -267,6 +278,7 @@ def search_page(
             "total": result.total,
             "offset": offset,
             "limit": limit,
+            "sort": sort,
         },
     )
 
