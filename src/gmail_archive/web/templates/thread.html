@@ -1,25 +1,18 @@
 {% extends "base.html" %}
 {% block title %}Thread — gmail-archive{% endblock %}
 {% block content %}
-<h1>Thread</h1>
-<p class="thread-id">Thread ID: <code>{{ thread_id }}</code></p>
+<div class="listbar">
+  <span class="listbar-title">Conversation</span>
+  <span class="listbar-count">{{ messages|length }} message{{ 's' if messages|length != 1 else '' }}</span>
+</div>
 
 {% if messages %}
-<div class="thread-messages">
+<div class="rows">
   {% for msg in messages %}
-  <div class="thread-card">
-    <div class="thread-card-header">
-      <span class="thread-card-date">{{ msg.internal_date|default("", true) }}
-        {%- if msg.internal_date %} <span class="date-relative-inline">({{ msg.internal_date|relative_date }})</span>{% endif %}</span>
-      <span class="thread-card-from">{{ msg.from_addr|default("", true) }}</span>
-      <span class="thread-card-subject">
-        <a href="/messages/{{ msg.raw_sha256 }}">{{ msg.subject|default("(no subject)", true) }}</a>
-      </span>
-    </div>
-  </div>
+    {% include "_row.html" %}
   {% endfor %}
 </div>
 {% else %}
-<p class="empty-state">No messages found in this thread.</p>
+<p class="empty">No messages found in this thread.</p>
 {% endif %}
 {% endblock %}

@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}{{ title }} — gmail-archive{% endblock %}
+{% block content %}
+
+{# Gmail's inbox tabs. Shown only in the Inbox, as in Gmail itself, and driven
+   by the Category * labels Takeout writes. #}
+{% if label == "Inbox" %}
+<div class="tabs">
+  {% for key, display in category_tabs %}
+  <a class="tab {% if (category or 'primary') == (key or 'primary') %}tab-active{% endif %}"
+     href="/?label=Inbox&amp;category={{ 'primary' if not key else key|urlencode }}">{{ display }}</a>
+  {% endfor %}
+</div>
+{% endif %}
+
+<div class="listbar">
+  <span class="listbar-title">{{ title }}</span>
+  {% if mailbox_counts.get(label) %}
+  <span class="listbar-count">{{ "{:,}".format(mailbox_counts[label]) }} messages</span>
+  {% endif %}
+</div>
+
+{% if messages %}
+<div class="rows">
+  {% for msg in messages %}
+    {% include "_row.html" %}
+  {% endfor %}
+</div>
+
+{% if next_cursor %}
+<div class="pager">
+  <a class="pager-next" href="/?label={{ (label or '')|urlencode }}{% if category %}&amp;category={{ category|urlencode }}{% endif %}&amp;limit={{ limit }}&amp;after_date={{ next_cursor.after_date|urlencode }}&amp;after_sha={{ next_cursor.after_sha }}">Older &rsaquo;</a>
+</div>
+{% endif %}
+
+{% else %}
+<p class="empty">
+  No messages in {{ title }}.
+  {% if label %}<a href="/?label=">Look in All Mail instead</a>.{% endif %}
+</p>
+{% endif %}
+
+{% endblock %}

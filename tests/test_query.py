@@ -15,6 +15,7 @@ from gmail_archive.query import (
     SEARCH_SORTS,
     ArchiveStats,
     LabelCount,
+    MessageRow,
     get_message,
     get_message_full,
     list_labels,
@@ -65,6 +66,42 @@ class TestStats:
 
             conn.execute("delete from messages where raw_sha256 = %s", (sha256,))
             conn.execute("delete from blobs where sha256 = %s", (sha256,))
+
+
+class TestMessageRowLabels:
+    """The list UI is driven by Gmail's own labels, carried through Takeout."""
+
+    def _row(self, *labels: str) -> MessageRow:
+        return MessageRow(
+            raw_sha256="0" * 64,
+            subject="s",
+            from_addr="a@example.com",
+            to_addrs=[],
+            internal_date=None,
+            thread_id=None,
+            labels=list(labels),
+        )
+
+    def test_gmail_state_flags(self) -> None:
+        row = self._row("Unread", "Starred", "Important")
+        assert (row.is_unread, row.is_starred, row.is_important) == (True, True, True)
+
+    def test_absent_labels_are_false_not_missing(self) -> None:
+        row = self._row()
+        assert (row.is_unread, row.is_starred, row.is_important) == (
+            False,
+            False,
+            False,
+        )
+
+    def test_user_labels_exclude_system_and_category(self) -> None:
+        row = self._row(
+            "Inbox", "Unread", "Category Promotions", "Amazon", "Bank Alerts"
+        )
+        assert row.user_labels == ["Amazon", "Bank Alerts"]
+
+    def test_a_row_with_only_system_labels_shows_no_chips(self) -> None:
+        assert self._row("Inbox", "Important", "Opened").user_labels == []
 
 
 class TestSearchSorts:

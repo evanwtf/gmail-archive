@@ -1,58 +1,29 @@
 {% extends "base.html" %}
-{% block title %}Dashboard — gmail-archive{% endblock %}
+{% block title %}Statistics — gmail-archive{% endblock %}
 {% block content %}
-<h1>Archive Dashboard</h1>
+<div class="listbar">
+  <span class="listbar-title">Archive statistics</span>
+</div>
 
 <div class="stats-grid">
+  {% for value, caption in [
+      (stats.total_messages, "Messages"),
+      (stats.total_blobs, "Blobs"),
+      (stats.total_attachments, "Attachments"),
+      (stats.total_labels, "Label assignments"),
+      (stats.total_failures, "Failed"),
+      (stats.total_runs, "Ingest runs")] %}
   <div class="stat-card">
-    <span class="stat-value">{{ stats.total_messages }}</span>
-    <span class="stat-label">Messages</span>
+    <span class="stat-value">{{ "{:,}".format(value) }}</span>
+    <span class="stat-label">{{ caption }}</span>
   </div>
-  <div class="stat-card">
-    <span class="stat-value">{{ stats.total_blobs }}</span>
-    <span class="stat-label">Blobs</span>
-  </div>
-  <div class="stat-card">
-    <span class="stat-value">{{ stats.total_attachments }}</span>
-    <span class="stat-label">Attachments</span>
-  </div>
-  <div class="stat-card">
-    <span class="stat-value">{{ stats.total_labels }}</span>
-    <span class="stat-label">Labels</span>
-  </div>
-  <div class="stat-card">
-    <span class="stat-value">{{ stats.total_failures }}</span>
-    <span class="stat-label">Failed</span>
-  </div>
-  <div class="stat-card">
-    <span class="stat-value">{{ stats.total_runs }}</span>
-    <span class="stat-label">Ingest Runs</span>
-  </div>
+  {% endfor %}
 </div>
 
-<div class="stats-detail">
-  <h2>Storage</h2>
-  <table>
-    <tr>
-      <td>Total message bytes</td>
-      <td>{{ "{:,}".format(stats.total_bytes) }}</td>
-    </tr>
-    <tr>
-      <td>Blob store bytes</td>
-      <td>{{ "{:,}".format(stats.blob_bytes) }}</td>
-    </tr>
-  </table>
-
-  <h2>Date Range</h2>
-  <table>
-    <tr>
-      <td>Earliest message</td>
-      <td>{{ stats.date_earliest|default("N/A", true) }}</td>
-    </tr>
-    <tr>
-      <td>Latest message</td>
-      <td>{{ stats.date_latest|default("N/A", true) }}</td>
-    </tr>
-  </table>
-</div>
+<table class="kv">
+  <tr><th>Total message bytes</th><td>{{ "{:,}".format(stats.total_bytes) }}</td></tr>
+  <tr><th>Blob store bytes</th><td>{{ "{:,}".format(stats.blob_bytes) }}</td></tr>
+  <tr><th>Earliest message</th><td>{{ stats.date_earliest|default("N/A", true) }}</td></tr>
+  <tr><th>Latest message</th><td>{{ stats.date_latest|default("N/A", true) }}</td></tr>
+</table>
 {% endblock %}

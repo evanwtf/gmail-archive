@@ -11,9 +11,54 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from gmail_archive.web.filters import relative_date
+from gmail_archive.web.filters import gmail_date, relative_date, sender_name
 
 NOW = datetime(2026, 8, 6, 12, 0, 0, tzinfo=UTC)
+
+
+class TestGmailDate:
+    """Gmail shows a time today, a month/day this year, a numeric date before."""
+
+    @pytest.mark.parametrize(
+        ("when", "expected"),
+        [
+            (datetime(2026, 8, 6, 11, 42, tzinfo=UTC), "11:42 AM"),
+            (datetime(2026, 8, 6, 0, 5, tzinfo=UTC), "12:05 AM"),
+            (datetime(2026, 8, 6, 13, 7, tzinfo=UTC), "1:07 PM"),
+            (datetime(2026, 3, 4, 9, 0, tzinfo=UTC), "Mar 4"),
+            (datetime(2026, 1, 1, 9, 0, tzinfo=UTC), "Jan 1"),
+            (datetime(2009, 3, 4, 9, 0, tzinfo=UTC), "3/4/09"),
+            (datetime(2025, 12, 31, 23, 59, tzinfo=UTC), "12/31/25"),
+        ],
+    )
+    def test_formats(self, when: datetime, expected: str) -> None:
+        assert gmail_date(when, NOW) == expected
+
+    def test_none_renders_empty(self) -> None:
+        assert gmail_date(None, NOW) == ""
+
+    def test_naive_is_read_as_utc(self) -> None:
+        assert gmail_date(datetime(2026, 8, 6, 11, 42), NOW) == "11:42 AM"
+
+    def test_no_leading_zero_on_the_hour(self) -> None:
+        # Gmail writes "9:05 AM", not "09:05 AM".
+        assert gmail_date(datetime(2026, 8, 6, 9, 5, tzinfo=UTC), NOW) == "9:05 AM"
+
+
+class TestSenderName:
+    def test_derives_a_readable_name_from_the_local_part(self) -> None:
+        assert sender_name("order-update@amazon.com") == "Order Update"
+        assert sender_name("no_reply@example.com") == "No Reply"
+        assert sender_name("first.last@example.com") == "First Last"
+
+    def test_missing_sender(self) -> None:
+        assert sender_name(None) == "(unknown sender)"
+        assert sender_name("") == "(unknown sender)"
+
+    def test_garbage_is_returned_rather_than_dropped(self) -> None:
+        # Not every From header in twenty years of mail is a valid address.
+        assert sender_name("not-an-address") == "Not An Address"
+        assert sender_name("@example.com") == "@example.com"
 
 
 class TestRelativeDate:

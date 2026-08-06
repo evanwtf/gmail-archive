@@ -1,26 +1,21 @@
 {% extends "base.html" %}
 {% block title %}Labels — gmail-archive{% endblock %}
 {% block content %}
-<h1>Labels</h1>
+<div class="listbar">
+  <span class="listbar-title">All labels</span>
+  <span class="listbar-count">{{ labels|length }}</span>
+</div>
 
 {% if labels %}
-<table class="label-list">
-  <thead>
-    <tr>
-      <th>Label</th>
-      <th>Messages</th>
-    </tr>
-  </thead>
-  <tbody>
-    {% for label in labels %}
-    <tr>
-      <td><a href="/messages?label={{ label.label|urlencode }}">{{ label.label }}</a></td>
-      <td class="count-cell">{{ label.message_count }}</td>
-    </tr>
-    {% endfor %}
-  </tbody>
-</table>
+<div class="chipwall">
+  {% for entry in labels %}
+  <a class="chipwall-item" href="/?label={{ entry.label|urlencode }}">
+    <span class="chipwall-name">{{ entry.label }}</span>
+    <span class="chipwall-count">{{ "{:,}".format(entry.message_count) }}</span>
+  </a>
+  {% endfor %}
+</div>
 {% else %}
-<p class="empty-state">No labels found.</p>
+<p class="empty">No labels found.</p>
 {% endif %}
 {% endblock %}

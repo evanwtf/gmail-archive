@@ -14,17 +14,59 @@
   {% block extra_head %}{% endblock %}
 </head>
 <body>
-  <nav>
-    <a href="/" class="nav-brand">gmail-archive</a>
-    <div class="nav-links">
-      <a href="/">Stats</a>
-      <a href="/messages">Messages</a>
-      <a href="/search">Search</a>
-      <a href="/labels">Labels</a>
-    </div>
+
+<header class="topbar">
+  <a href="/" class="brand">
+    <span class="brand-mark">M</span>
+    <span class="brand-name">archive</span>
+  </a>
+  <form action="/search" method="get" class="topsearch" role="search">
+    <button type="submit" class="topsearch-icon" aria-label="Search">&#128269;</button>
+    <input type="search" name="q" value="{{ query|default('', true) }}"
+           placeholder="Search mail" class="topsearch-input" autocomplete="off">
+  </form>
+  <div class="topbar-right">
+    <span class="readonly-chip" title="This archive is immutable. Nothing here can send, delete, or modify mail.">read-only</span>
+  </div>
+</header>
+
+<div class="shell">
+  <nav class="rail">
+    {% for name, display, icon in mailboxes|default([]) %}
+    <a class="rail-item {% if (label or '') == (name or '') and not query %}rail-item-active{% endif %}"
+       href="{% if name %}/?label={{ name|urlencode }}{% else %}/?label={% endif %}">
+      <span class="rail-icon rail-icon-{{ icon }}" aria-hidden="true"></span>
+      <span class="rail-label">{{ display }}</span>
+      {% if name and mailbox_counts.get(name) %}
+      <span class="rail-count">{{ "{:,}".format(mailbox_counts[name]) }}</span>
+      {% endif %}
+    </a>
+    {% endfor %}
+
+    {% if user_labels %}
+    <div class="rail-section">Labels</div>
+    {% for entry in user_labels %}
+    <a class="rail-item {% if label == entry.label %}rail-item-active{% endif %}"
+       href="/?label={{ entry.label|urlencode }}" title="{{ entry.label }}">
+      <span class="rail-icon rail-icon-label" aria-hidden="true"></span>
+      <span class="rail-label">{{ entry.label }}</span>
+      <span class="rail-count">{{ "{:,}".format(entry.message_count) }}</span>
+    </a>
+    {% endfor %}
+    <a class="rail-item rail-more" href="/labels">All labels &rsaquo;</a>
+    {% endif %}
+
+    <div class="rail-section">Archive</div>
+    <a class="rail-item" href="/stats">
+      <span class="rail-icon rail-icon-stats" aria-hidden="true"></span>
+      <span class="rail-label">Statistics</span>
+    </a>
   </nav>
-  <main>
+
+  <main class="content">
     {% block content %}{% endblock %}
   </main>
+</div>
+
 </body>
 </html>

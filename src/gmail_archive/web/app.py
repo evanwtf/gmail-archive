@@ -20,11 +20,16 @@ from fastapi.templating import Jinja2Templates
 
 from gmail_archive.config import Settings
 from gmail_archive.query import (
+    CATEGORY_TABS,
     DEFAULT_SEARCH_SORT,
+    MAILBOXES,
     SEARCH_SORTS,
+    SYSTEM_LABELS,
+    LabelCount,
     get_message,
     get_message_full,
     get_thread_messages,
+    label_counts,
     list_labels,
     list_messages_keyset,
     search,
@@ -32,7 +37,7 @@ from gmail_archive.query import (
 )
 from gmail_archive.storage import BlobStore
 from gmail_archive.version import build_info
-from gmail_archive.web.filters import relative_date
+from gmail_archive.web.filters import gmail_date, relative_date, sender_name
 
 HERE = Path(__file__).parent
 
@@ -44,6 +49,8 @@ _SHA256_RE = re.compile(r"[0-9a-f]{64}")
 app = FastAPI(title="gmail-archive", docs_url="/docs")
 templates = Jinja2Templates(directory=str(HERE / "templates"))
 templates.env.filters["relative_date"] = relative_date
+templates.env.filters["gmail_date"] = gmail_date
+templates.env.filters["sender_name"] = sender_name
 app.mount("/static", StaticFiles(directory=str(HERE / "static")), name="static")
 
 
@@ -125,34 +132,45 @@ def version() -> dict[str, Any]:
 # ── Phase 7 web UI routes ─────────────────────────────────────────
 
 
+def _chrome(conn: psycopg.Connection[object]) -> dict[str, Any]:
+    """Everything the Gmail shell needs on every page: rail counts and labels.
+
+    A single grouped scan of `labels` serves both — splitting it into a
+    mailbox-count query and a label-list query meant scanning a million-row
+    table twice for every page render.
+    """
+    counts = label_counts(conn)
+    user_labels = sorted(
+        (
+            LabelCount(label=name, message_count=count)
+            for name, count in counts.items()
+            if name not in SYSTEM_LABELS and not name.startswith("Category")
+        ),
+        key=lambda entry: (-entry.message_count, entry.label),
+    )
+    return {
+        "mailboxes": MAILBOXES,
+        "mailbox_counts": counts,
+        "category_tabs": CATEGORY_TABS,
+        "user_labels": user_labels[:20],
+    }
+
+
 @app.get("/", response_class=HTMLResponse)
-def index(request: Request) -> HTMLResponse:
-    """Stats dashboard."""
-    try:
-        with _get_conn() as conn:
-            s = stats(conn)
-    except Exception:
-        return templates.TemplateResponse(
-            request,
-            "error.html",
-            {"message": "Database is unavailable."},
-            status_code=503,
-        )
-    return templates.TemplateResponse(request, "index.html", {"stats": s})
-
-
-@app.get("/messages", response_class=HTMLResponse)
-def messages_page(
+def index(
     request: Request,
     after_date: str | None = None,
     after_sha: str | None = None,
-    label: str | None = None,
+    label: str | None = "Inbox",
+    category: str | None = None,
     limit: int = 50,
 ) -> HTMLResponse:
-    """Message list with keyset pagination.
+    """The front door: the Gmail inbox.
 
-    Pass ``after_date`` and ``after_sha`` from the last message on the
-    previous page to get the next page. Supports optional ``label`` filter.
+    Defaults to Gmail's own ``Inbox`` label. ``?label=`` selects any other
+    mailbox or user label; ``?label=`` with an empty value is All Mail.
+    ``?category=`` selects an inbox tab, and the Primary tab is expressed as
+    "in the inbox and in none of the other categories".
     """
     after_date_dt: datetime | None = None
     if after_date:
@@ -161,6 +179,13 @@ def messages_page(
         except ValueError:
             after_date_dt = None
 
+    # Primary is everything the other tabs do not claim.
+    exclude: tuple[str, ...] = ()
+    if category == "primary":
+        exclude = tuple(name for name, _ in CATEGORY_TABS if name)
+    elif category:
+        label = category
+
     try:
         with _get_conn() as conn:
             msgs = list_messages_keyset(
@@ -168,8 +193,10 @@ def messages_page(
                 after_date=after_date_dt,
                 after_sha=after_sha,
                 limit=limit + 1,
-                label=label,
+                label=label or None,
+                exclude_labels=exclude,
             )
+            context = _chrome(conn)
     except psycopg.Error:
         return templates.TemplateResponse(
             request,
@@ -190,15 +217,54 @@ def messages_page(
             "after_sha": last.raw_sha256,
         }
 
-    return templates.TemplateResponse(
-        request,
-        "messages.html",
+    context.update(
         {
             "messages": msgs,
             "next_cursor": next_cursor,
             "label": label,
-        },
+            "category": category,
+            "limit": limit,
+            "title": label or "All Mail",
+        }
     )
+    return templates.TemplateResponse(request, "mailbox.html", context)
+
+
+@app.get("/messages", response_class=HTMLResponse)
+def messages_page(
+    request: Request,
+    after_date: str | None = None,
+    after_sha: str | None = None,
+    label: str | None = None,
+    limit: int = 50,
+) -> HTMLResponse:
+    """All Mail. Kept as its own path because it predates the inbox front door
+    and is linked from the docs; the inbox is the same view with a label."""
+    return index(
+        request,
+        after_date=after_date,
+        after_sha=after_sha,
+        label=label,
+        limit=limit,
+    )
+
+
+@app.get("/stats", response_class=HTMLResponse)
+def stats_page(request: Request) -> HTMLResponse:
+    """Archive statistics — the dashboard that used to be the front door."""
+    try:
+        with _get_conn() as conn:
+            s = stats(conn)
+            context = _chrome(conn)
+    except psycopg.Error:
+        return templates.TemplateResponse(
+            request,
+            "error.html",
+            {"message": "Database is unavailable."},
+            status_code=503,
+        )
+    context["stats"] = s
+    return templates.TemplateResponse(request, "index.html", context)
 
 
 @app.get("/messages/{sha256}", response_class=HTMLResponse)
@@ -207,6 +273,7 @@ def message_detail(request: Request, sha256: str) -> HTMLResponse:
     try:
         with _get_conn() as conn:
             msg = get_message_full(conn, sha256)
+            context = _chrome(conn)
     except psycopg.Error:
         return templates.TemplateResponse(
             request,
@@ -220,14 +287,8 @@ def message_detail(request: Request, sha256: str) -> HTMLResponse:
 
     sanitized_html = nh3.clean(msg.body_html or "") if msg.body_html else ""
 
-    return templates.TemplateResponse(
-        request,
-        "message.html",
-        {
-            "msg": msg,
-            "sanitized_html": sanitized_html,
-        },
-    )
+    context.update({"msg": msg, "sanitized_html": sanitized_html})
+    return templates.TemplateResponse(request, "message.html", context)
 
 
 @app.get("/thread/{thread_id}", response_class=HTMLResponse)
@@ -236,6 +297,7 @@ def thread_view(request: Request, thread_id: str) -> HTMLResponse:
     try:
         with _get_conn() as conn:
             msgs = get_thread_messages(conn, thread_id)
+            context = _chrome(conn)
     except psycopg.Error:
         return templates.TemplateResponse(
             request,
@@ -244,14 +306,8 @@ def thread_view(request: Request, thread_id: str) -> HTMLResponse:
             status_code=503,
         )
 
-    return templates.TemplateResponse(
-        request,
-        "thread.html",
-        {
-            "thread_id": thread_id,
-            "messages": msgs,
-        },
-    )
+    context.update({"thread_id": thread_id, "messages": msgs})
+    return templates.TemplateResponse(request, "thread.html", context)
 
 
 @app.get("/search", response_class=HTMLResponse)
@@ -274,6 +330,7 @@ def search_page(
     try:
         with _get_conn() as conn:
             result = search(conn, q, limit=limit, offset=offset, sort=sort)
+            context = _chrome(conn)
     except psycopg.Error:
         return templates.TemplateResponse(
             request,
@@ -282,9 +339,7 @@ def search_page(
             status_code=503,
         )
 
-    return templates.TemplateResponse(
-        request,
-        "search.html",
+    context.update(
         {
             "query": q,
             "results": result.messages,
@@ -292,8 +347,9 @@ def search_page(
             "offset": offset,
             "limit": limit,
             "sort": sort,
-        },
+        }
     )
+    return templates.TemplateResponse(request, "search.html", context)
 
 
 @app.get("/labels", response_class=HTMLResponse)
@@ -302,6 +358,7 @@ def labels_page(request: Request) -> HTMLResponse:
     try:
         with _get_conn() as conn:
             labels = list_labels(conn)
+            context = _chrome(conn)
     except psycopg.Error:
         return templates.TemplateResponse(
             request,
@@ -310,11 +367,8 @@ def labels_page(request: Request) -> HTMLResponse:
             status_code=503,
         )
 
-    return templates.TemplateResponse(
-        request,
-        "labels.html",
-        {"labels": labels},
-    )
+    context["labels"] = labels
+    return templates.TemplateResponse(request, "labels.html", context)
 
 
 #: Rendered inline by /messages/{sha}/raw. Past this, the page stops being
@@ -349,17 +403,18 @@ def raw_message_view(request: Request, sha256: str) -> HTMLResponse:
     text = shown.decode("utf-8", errors="replace")
 
     subject: str | None = None
+    context: dict[str, Any] = {}
     try:
         with _get_conn() as conn:
             msg = get_message(conn, sha256)
             subject = msg.subject if msg else None
+            context = _chrome(conn)
     except psycopg.Error:
-        # The blob is the point of this page; the subject is only a heading.
+        # The blob is the point of this page; the subject and the surrounding
+        # rail are only decoration, and the page is still worth serving.
         pass
 
-    return templates.TemplateResponse(
-        request,
-        "raw.html",
+    context.update(
         {
             "sha256": sha256,
             "subject": subject,
@@ -367,8 +422,9 @@ def raw_message_view(request: Request, sha256: str) -> HTMLResponse:
             "truncated": truncated,
             "shown_bytes": len(shown),
             "total_bytes": len(data),
-        },
+        }
     )
+    return templates.TemplateResponse(request, "raw.html", context)
 
 
 @app.get("/raw/{sha256}")

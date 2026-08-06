@@ -1,0 +1,34 @@
+{# One message row, shared by the mailbox list and search results.
+
+   `highlight` renders the ts_headline snippet with its [hl] markers turned
+   into <mark>; the mailbox list passes plain body text instead. #}
+<a class="row {% if msg.is_unread %}row-unread{% endif %}" href="/messages/{{ msg.raw_sha256 }}">
+  <span class="row-star {% if msg.is_starred %}row-star-on{% endif %}"
+        title="{% if msg.is_starred %}Starred in Gmail{% else %}Not starred{% endif %}">&#9733;</span>
+  <span class="row-important {% if msg.is_important %}row-important-on{% endif %}"
+        title="{% if msg.is_important %}Marked important by Gmail{% else %}Not important{% endif %}">&#9656;</span>
+
+  <span class="row-sender" title="{{ msg.from_addr|default('', true) }}">
+    {{ msg.from_addr|sender_name }}
+  </span>
+
+  <span class="row-main">
+    <span class="row-subject">{{ msg.subject|default("(no subject)", true) }}</span>
+    {% for label in msg.user_labels[:3] %}
+    <span class="row-chip">{{ label }}</span>
+    {% endfor %}
+    {% if msg.snippet %}
+    <span class="row-snippet">&ndash;
+      {%- if highlight %}
+        {{ msg.snippet|replace("[hl]", "<mark>")|replace("[/hl]", "</mark>")|safe }}
+      {%- else %}
+        {{ msg.snippet }}
+      {%- endif %}
+    </span>
+    {% endif %}
+  </span>
+
+  <span class="row-date" title="{{ msg.internal_date|default('', true) }}{% if msg.internal_date %} ({{ msg.internal_date|relative_date }}){% endif %}">
+    {{ msg.internal_date|gmail_date }}
+  </span>
+</a>

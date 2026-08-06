@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Raw source — gmail-archive{% endblock %}
 {% block content %}
-<h1>Raw message source</h1>
+<div class="listbar"><span class="listbar-title">Raw message source</span></div>
 
 <p class="raw-subject">{{ subject|default("(no subject)", true) }}</p>
 <p class="raw-meta">

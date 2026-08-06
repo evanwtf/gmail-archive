@@ -1,68 +1,49 @@
 {% extends "base.html" %}
-{% block title %}Search — gmail-archive{% endblock %}
+{% block title %}{% if query %}{{ query }} — {% endif %}Search — gmail-archive{% endblock %}
 {% block content %}
-<h1>Search</h1>
-
-<form action="/search" method="get" class="search-form">
-  <input type="search" name="q" value="{{ query|default('', true) }}" placeholder="Search messages..." class="search-input" autofocus>
-  {# Carry the chosen ordering through a new search rather than silently resetting it. #}
-  <input type="hidden" name="sort" value="{{ sort|default('date', true) }}">
-  <button type="submit" class="btn">Search</button>
-</form>
 
 {% if query %}
-  {% if results %}
-  <p class="result-count">{{ total }} result{{ 's' if total != 1 else '' }} for <strong>{{ query }}</strong></p>
+<div class="listbar">
+  <span class="listbar-title">{{ "{:,}".format(total) }} result{{ 's' if total != 1 else '' }}</span>
+  <span class="listbar-count">for &ldquo;{{ query }}&rdquo;</span>
 
   {# Changing the sort resets offset: page 3 of one ordering is not page 3 of another. #}
-  <p class="sort-controls">Sort:
-    {% for key, label in [("date", "Newest first"), ("date-asc", "Oldest first"), ("relevance", "Relevance")] %}
+  <span class="sortbar">
+    {% for key, sort_label in [("date", "Newest"), ("date-asc", "Oldest"), ("relevance", "Relevance")] %}
       {%- if sort == key -%}
-        <strong class="sort-active">{{ label }}</strong>
+        <strong class="sort-active">{{ sort_label }}</strong>
       {%- else -%}
-        <a href="/search?q={{ query|urlencode }}&amp;limit={{ limit }}&amp;sort={{ key }}">{{ label }}</a>
+        <a href="/search?q={{ query|urlencode }}&amp;limit={{ limit }}&amp;sort={{ key }}">{{ sort_label }}</a>
       {%- endif -%}
-      {{ " · " if not loop.last }}
     {% endfor %}
-  </p>
-  <table class="message-list">
-    <thead>
-      <tr>
-        <th>Date</th>
-        <th>Subject</th>
-        <th>From</th>
-        <th>Snippet</th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for msg in results %}
-      <tr>
-        <td class="date-cell">
-          {{ msg.internal_date|default("", true) }}
-          {%- if msg.internal_date %}<span class="date-relative">{{ msg.internal_date|relative_date }}</span>{% endif %}
-        </td>
-        <td><a href="/messages/{{ msg.raw_sha256 }}">{{ msg.subject|default("(no subject)", true) }}</a></td>
-        {# title= so a truncated address is still readable on hover. #}
-        <td class="addr-cell" title="{{ msg.from_addr|default('', true) }}">{{ msg.from_addr|default("", true) }}</td>
-        <td class="snippet-cell">{{ msg.snippet|replace("[hl]", "<mark>")|replace("[/hl]", "</mark>")|safe }}</td>
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
+  </span>
+</div>
 
-  {% if offset > 0 or total > limit %}
-  <div class="pagination">
-    {% if offset > 0 %}
-    <a href="/search?q={{ query|urlencode }}&amp;offset={{ offset - limit }}&amp;limit={{ limit }}&amp;sort={{ sort }}" class="prev-page">Previous</a>
-    {% endif %}
-    {% if offset + limit < total %}
-    <a href="/search?q={{ query|urlencode }}&amp;offset={{ offset + limit }}&amp;limit={{ limit }}&amp;sort={{ sort }}" class="next-page">Next</a>
-    {% endif %}
-  </div>
-  {% endif %}
+{% if results %}
+<div class="rows">
+  {% for msg in results %}
+    {% with highlight = True %}{% include "_row.html" %}{% endwith %}
+  {% endfor %}
+</div>
 
-  {% else %}
-  <p class="empty-state">No results for <strong>{{ query }}</strong>.</p>
+{% if offset > 0 or offset + limit < total %}
+<div class="pager">
+  {% if offset > 0 %}
+  <a class="pager-prev" href="/search?q={{ query|urlencode }}&amp;offset={{ offset - limit }}&amp;limit={{ limit }}&amp;sort={{ sort }}">&lsaquo; Newer</a>
   {% endif %}
+  {% if offset + limit < total %}
+  <a class="pager-next" href="/search?q={{ query|urlencode }}&amp;offset={{ offset + limit }}&amp;limit={{ limit }}&amp;sort={{ sort }}">Older &rsaquo;</a>
+  {% endif %}
+</div>
 {% endif %}
+
+{% else %}
+<p class="empty">No results for &ldquo;{{ query }}&rdquo;.</p>
+{% endif %}
+
+{% else %}
+<p class="empty">Search the archive using the box above. Quoted phrases and
+  <code>-excluded</code> terms work.</p>
+{% endif %}
+
 {% endblock %}

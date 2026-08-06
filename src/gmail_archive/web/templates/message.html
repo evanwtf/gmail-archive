@@ -1,64 +1,73 @@
 {% extends "base.html" %}
 {% block title %}{{ msg.subject|default("(no subject)", true) }} — gmail-archive{% endblock %}
 {% block content %}
-<h1>{{ msg.subject|default("(no subject)", true) }}</h1>
 
-<div class="message-meta">
-  <table>
-    <tr><th>From</th><td>{{ msg.from_addr|default("", true) }}</td></tr>
-    <tr><th>To</th><td>{{ msg.to_addrs|join(", ")|default("", true) }}</td></tr>
-    {% if msg.cc_addrs %}
-    <tr><th>Cc</th><td>{{ msg.cc_addrs|join(", ") }}</td></tr>
-    {% endif %}
-    <tr><th>Date</th><td>{{ msg.internal_date|default("", true) }}
-      {%- if msg.internal_date %} <span class="date-relative-inline">({{ msg.internal_date|relative_date }})</span>{% endif %}</td></tr>
-    <tr><th>Message-ID</th><td><code>{{ msg.message_id|default("", true) }}</code></td></tr>
-    {% if msg.thread_id %}
-    <tr><th>Thread</th><td><a href="/thread/{{ msg.thread_id }}">{{ msg.thread_id }}</a></td></tr>
-    {% endif %}
-    <tr><th>Size</th><td>{{ "{:,}".format(msg.size_bytes) }} bytes</td></tr>
-  </table>
-</div>
-
-{% if msg.labels %}
-<div class="labels">
-  {% for label in msg.labels %}
-  <span class="label-badge">{{ label }}</span>
-  {% endfor %}
-</div>
-{% endif %}
-
-<div class="message-actions">
-  <a href="/messages/{{ msg.raw_sha256 }}/raw" class="btn">View raw text</a>
-  <a href="/raw/{{ msg.raw_sha256 }}" class="btn" download>Download raw message</a>
-</div>
-
-<div class="message-body">
-  {% if msg.body_text %}
-  <h2>Plain text</h2>
-  <pre class="text-body">{{ msg.body_text }}</pre>
-  {% endif %}
-
-  {% if msg.body_html %}
-  <h2>HTML</h2>
-  <div class="html-body-container">
-    <iframe class="html-body" sandbox="allow-same-origin" srcdoc="{{ sanitized_html }}"></iframe>
+<div class="conv">
+  <div class="conv-head">
+    <a class="conv-back" href="/" title="Back to the inbox">&larr;</a>
+    <h1 class="conv-subject">{{ msg.subject|default("(no subject)", true) }}</h1>
+    {% for label in msg.labels %}
+    <span class="row-chip">{{ label }}</span>
+    {% endfor %}
   </div>
-  {% endif %}
-</div>
 
-{% if msg.parse_warnings %}
-<div class="debug-panel">
-  <details>
-    <summary>Parse warnings ({{ msg.parse_warnings|length }})</summary>
-    <ul>
+  <div class="conv-meta">
+    <div class="conv-avatar" aria-hidden="true">{{ (msg.from_addr or "?")[0]|upper }}</div>
+    <div class="conv-who">
+      <div class="conv-from">
+        <strong>{{ msg.from_addr|sender_name }}</strong>
+        <span class="conv-addr">&lt;{{ msg.from_addr|default("unknown", true) }}&gt;</span>
+      </div>
+      <div class="conv-to">
+        to {{ msg.to_addrs|join(", ")|default("(undisclosed)", true) }}
+        {%- if msg.cc_addrs %}, cc {{ msg.cc_addrs|join(", ") }}{% endif %}
+      </div>
+    </div>
+    <div class="conv-date" title="{{ msg.internal_date|default('', true) }}">
+      {{ msg.internal_date|gmail_date }}
+      {%- if msg.internal_date %}
+      <span class="conv-ago">({{ msg.internal_date|relative_date }})</span>
+      {%- endif %}
+    </div>
+  </div>
+
+  <div class="conv-body">
+    {% if msg.body_html %}
+    <iframe class="html-body" sandbox="" srcdoc="{{ sanitized_html }}"></iframe>
+    {% elif msg.body_text %}
+    <pre class="text-body">{{ msg.body_text }}</pre>
+    {% else %}
+    <p class="empty">This message has no text or HTML body.</p>
+    {% endif %}
+  </div>
+
+  <div class="conv-actions">
+    <a href="/messages/{{ msg.raw_sha256 }}/raw" class="btn">View raw text</a>
+    <a href="/raw/{{ msg.raw_sha256 }}" class="btn" download>Download</a>
+    {% if msg.thread_id %}
+    <a href="/thread/{{ msg.thread_id }}" class="btn">Thread</a>
+    {% endif %}
+  </div>
+
+  <details class="conv-details">
+    <summary>Details</summary>
+    <table class="kv">
+      <tr><th>Message-ID</th><td><code>{{ msg.message_id|default("(none)", true) }}</code></td></tr>
+      {% if msg.reply_to %}<tr><th>Reply-To</th><td>{{ msg.reply_to }}</td></tr>{% endif %}
+      {% if msg.in_reply_to %}<tr><th>In-Reply-To</th><td><code>{{ msg.in_reply_to }}</code></td></tr>{% endif %}
+      <tr><th>Size</th><td>{{ "{:,}".format(msg.size_bytes) }} bytes</td></tr>
+      <tr><th>Content hash</th><td><code>{{ msg.raw_sha256 }}</code></td></tr>
+      {% if msg.parse_warnings %}
       {# The stored JSON is {"code": ..., "detail": ...}; this panel read
          .field/.message and so rendered an empty bullet for every warning. #}
-      {% for warning in msg.parse_warnings %}
-      <li><strong>{{ warning.code }}</strong>{% if warning.detail %}: {{ warning.detail }}{% endif %}</li>
-      {% endfor %}
-    </ul>
+      <tr><th>Parse warnings</th><td>
+        {% for warning in msg.parse_warnings %}
+        <div><strong>{{ warning.code }}</strong>{% if warning.detail %}: {{ warning.detail }}{% endif %}</div>
+        {% endfor %}
+      </td></tr>
+      {% endif %}
+    </table>
   </details>
 </div>
-{% endif %}
+
 {% endblock %}

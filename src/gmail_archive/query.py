@@ -12,13 +12,72 @@ scan over the whole archive.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
 import psycopg
 
 logger = logging.getLogger(__name__)
+
+#: Gmail's own labels, as they arrive in a Takeout export. The UI renders these
+#: as mailboxes and icons rather than as chips, so they are filtered out of a
+#: row's user labels.
+SYSTEM_LABELS: frozenset[str] = frozenset(
+    {
+        "Inbox",
+        "Sent",
+        "Drafts",
+        "Spam",
+        "Trash",
+        "Chat",
+        "Starred",
+        "Important",
+        "Unread",
+        "Opened",
+        "Archived",
+        "Category",
+    }
+)
+
+#: The left rail, in Gmail's order. (label, display name, icon). `None` as the
+#: label means "everything" — Gmail's All Mail.
+MAILBOXES: tuple[tuple[str | None, str, str], ...] = (
+    ("Inbox", "Inbox", "inbox"),
+    ("Starred", "Starred", "star"),
+    ("Important", "Important", "important"),
+    ("Sent", "Sent", "sent"),
+    ("Drafts", "Drafts", "draft"),
+    ("Chat", "Chat", "chat"),
+    ("Spam", "Spam", "spam"),
+    ("Archived", "Archived", "archive"),
+    (None, "All Mail", "all"),
+)
+
+#: Gmail's inbox tabs, mapped to the `Category *` labels Takeout writes.
+CATEGORY_TABS: tuple[tuple[str | None, str], ...] = (
+    (None, "Primary"),
+    ("Category Social", "Social"),
+    ("Category Promotions", "Promotions"),
+    ("Category Updates", "Updates"),
+    ("Category Purchases", "Purchases"),
+)
+
+#: Trimmed body text shown under the subject on a list row.
+#:
+#: `left()` before `regexp_replace`, not after. Collapsing whitespace across the
+#: whole column first means de-TOASTing and scanning every byte of a multi-
+#: megabyte HTML body to produce 220 characters — measured at 190ms for a page
+#: of 50 rows against 10ms with the truncation first. 600 characters is a
+#: generous margin for whitespace collapsing to eat into.
+_SNIPPET_SQL = "regexp_replace(left(coalesce(m.body_text, ''), 600), '\\s+', ' ', 'g')"
+
+#: Labels for one row, as a json array. Lateral rather than a join so a message
+#: with twelve labels still produces exactly one row.
+_LABELS_SQL = (
+    "coalesce((select json_agg(l2.label order by l2.label) from labels l2"
+    " where l2.raw_sha256 = m.raw_sha256), '[]'::json)"
+)
 
 
 def _row(row: object) -> tuple[Any, ...]:
@@ -58,6 +117,34 @@ class MessageRow:
     internal_date: datetime | None
     thread_id: str | None
     snippet: str = ""
+    labels: list[str] = field(default_factory=list)
+
+    @property
+    def is_unread(self) -> bool:
+        """Gmail's own Unread label, carried through Takeout."""
+        return "Unread" in self.labels
+
+    @property
+    def is_starred(self) -> bool:
+        return "Starred" in self.labels
+
+    @property
+    def is_important(self) -> bool:
+        return "Important" in self.labels
+
+    @property
+    def user_labels(self) -> list[str]:
+        """Labels worth showing as chips on a row.
+
+        Excludes the system labels the UI already renders as icons or as the
+        current mailbox, and the `Category *` labels that drive the inbox tabs
+        — a row in Promotions does not need a chip saying "Promotions".
+        """
+        return [
+            label
+            for label in self.labels
+            if label not in SYSTEM_LABELS and not label.startswith("Category")
+        ]
 
 
 @dataclass
@@ -197,37 +284,27 @@ def search(
 
     raw_rows = conn.execute(
         "select"
-        "  raw_sha256,"
-        "  subject,"
-        "  from_addr,"
-        "  to_addrs,"
-        "  internal_date,"
-        "  thread_id,"
+        "  m.raw_sha256,"
+        "  m.subject,"
+        "  m.from_addr,"
+        "  m.to_addrs,"
+        "  m.internal_date,"
+        "  m.thread_id,"
         "  ts_headline("
         "    'english',"
-        "    coalesce(subject, '') || ' ' || coalesce(search_text, ''),"
+        "    coalesce(m.subject, '') || ' ' || coalesce(m.search_text, ''),"
         "    websearch_to_tsquery('english', %(q)s),"
         "    'MaxWords=40, MinWords=20, StartSel=[hl], StopSel=[/hl]'"
-        "  ) as snippet"
-        " from messages"
-        " where search_tsv @@ websearch_to_tsquery('english', %(q)s)"
+        "  ) as snippet,"
+        f" {_LABELS_SQL} as labels"
+        " from messages m"
+        " where m.search_tsv @@ websearch_to_tsquery('english', %(q)s)"
         f" order by {SEARCH_SORTS[sort]}"
         " limit %(limit)s offset %(offset)s",
         {"q": query, "limit": limit, "offset": offset},
     ).fetchall()
 
-    messages = [
-        MessageRow(
-            raw_sha256=str(r[0]),
-            subject=r[1],
-            from_addr=r[2],
-            to_addrs=list(r[3]) if r[3] else [],
-            internal_date=r[4],
-            thread_id=r[5],
-            snippet=r[6] or "",
-        )
-        for r in (_row(rr) for rr in raw_rows)
-    ]
+    messages = [_message_row(r) for r in (_row(rr) for rr in raw_rows)]
 
     return SearchResult(messages=messages, total=total, query=query)
 
@@ -356,6 +433,7 @@ def list_messages_keyset(
     after_sha: str | None = None,
     limit: int = 50,
     label: str | None = None,
+    exclude_labels: tuple[str, ...] = (),
 ) -> list[MessageRow]:
     """List messages using keyset pagination.
 
@@ -372,67 +450,66 @@ def list_messages_keyset(
     page through the NULL tail.
 
     If ``label`` is provided, only messages carrying that label are returned.
+    If ``exclude_labels`` is provided, messages carrying any of them are
+    omitted — this is how Gmail's Primary tab is expressed: everything that is
+    not in one of the other category tabs.
     """
-    base_select = (
+    conditions: list[str] = []
+    params: list[object] = []
+
+    # Keyset predicate. A row comparison against a NULL internal_date is NULL,
+    # so dated and undated pages need different predicates; see the note above.
+    if after_date is not None and after_sha is not None:
+        conditions.append("(m.internal_date, m.raw_sha256) < (%s::timestamptz, %s)")
+        params += [after_date, after_sha]
+    elif after_sha is not None:
+        conditions.append("m.internal_date is null and m.raw_sha256 < %s")
+        params.append(after_sha)
+
+    if label:
+        conditions.append(
+            "exists (select 1 from labels l"
+            " where l.raw_sha256 = m.raw_sha256 and l.label = %s)"
+        )
+        params.append(label)
+
+    for excluded in exclude_labels:
+        conditions.append(
+            "not exists (select 1 from labels x"
+            " where x.raw_sha256 = m.raw_sha256 and x.label = %s)"
+        )
+        params.append(excluded)
+
+    where = (" where " + " and ".join(conditions)) if conditions else ""
+
+    raw_rows = conn.execute(
         "select"
         "  m.raw_sha256, m.subject, m.from_addr, m.to_addrs,"
-        "  m.internal_date, m.thread_id"
+        "  m.internal_date, m.thread_id,"
+        f" {_SNIPPET_SQL} as snippet,"
+        f" {_LABELS_SQL} as labels"
         " from messages m"
+        f"{where}"
+        " order by m.internal_date desc nulls last, m.raw_sha256 desc"
+        " limit %s",
+        (*params, limit),
+    ).fetchall()
+
+    return [_message_row(r) for r in (_row(rr) for rr in raw_rows)]
+
+
+def _message_row(r: tuple[Any, ...]) -> MessageRow:
+    """Build a MessageRow from the standard listing column order."""
+    return MessageRow(
+        raw_sha256=str(r[0]),
+        subject=r[1],
+        from_addr=r[2],
+        to_addrs=list(r[3]) if r[3] else [],
+        internal_date=r[4],
+        thread_id=r[5],
+        snippet=(r[6] or "") if len(r) > 6 else "",
+        labels=list(r[7]) if len(r) > 7 and r[7] else [],
     )
-    if label:
-        base_select += " join labels l on l.raw_sha256 = m.raw_sha256"
-        label_where = "l.label = %s"
-
-    if after_date is not None and after_sha is not None:
-        where = " where (m.internal_date, m.raw_sha256) < (%s::timestamptz, %s)"
-        params: list[object] = [after_date, after_sha]
-        if label:
-            where += " and " + label_where
-            params.append(label)
-        raw_rows = conn.execute(
-            base_select
-            + where
-            + " order by m.internal_date desc nulls last, m.raw_sha256 desc"
-            " limit %s",
-            (*params, limit),
-        ).fetchall()
-    elif after_sha is not None:
-        where = " where m.internal_date is null and m.raw_sha256 < %s"
-        params = [after_sha]
-        if label:
-            where += " and " + label_where
-            params.append(label)
-        raw_rows = conn.execute(
-            base_select
-            + where
-            + " order by m.internal_date desc nulls last, m.raw_sha256 desc"
-            " limit %s",
-            (*params, limit),
-        ).fetchall()
-    else:
-        where = ""
-        params = [label] if label else []
-        if label:
-            where = " where " + label_where
-        raw_rows = conn.execute(
-            base_select
-            + where
-            + " order by m.internal_date desc nulls last, m.raw_sha256 desc"
-            " limit %s",
-            (*params, limit),
-        ).fetchall()
-
-    return [
-        MessageRow(
-            raw_sha256=str(r[0]),
-            subject=r[1],
-            from_addr=r[2],
-            to_addrs=list(r[3]) if r[3] else [],
-            internal_date=r[4],
-            thread_id=r[5],
-        )
-        for r in (_row(rr) for rr in raw_rows)
-    ]
 
 
 def get_thread_messages(
@@ -442,20 +519,27 @@ def get_thread_messages(
     """Fetch all messages in a thread, ordered by internal_date."""
     raw_rows = conn.execute(
         "select"
-        "  raw_sha256, subject, from_addr, to_addrs, internal_date, thread_id"
-        " from messages"
-        " where thread_id = %s"
-        " order by internal_date desc nulls last, raw_sha256 desc",
+        "  m.raw_sha256, m.subject, m.from_addr, m.to_addrs,"
+        "  m.internal_date, m.thread_id,"
+        f" {_SNIPPET_SQL} as snippet,"
+        f" {_LABELS_SQL} as labels"
+        " from messages m"
+        " where m.thread_id = %s"
+        " order by m.internal_date desc nulls last, m.raw_sha256 desc",
         (thread_id,),
     ).fetchall()
-    return [
-        MessageRow(
-            raw_sha256=str(r[0]),
-            subject=r[1],
-            from_addr=r[2],
-            to_addrs=list(r[3]) if r[3] else [],
-            internal_date=r[4],
-            thread_id=r[5],
-        )
-        for r in (_row(rr) for rr in raw_rows)
-    ]
+    return [_message_row(r) for r in (_row(rr) for rr in raw_rows)]
+
+
+def label_counts(conn: psycopg.Connection[object]) -> dict[str, int]:
+    """Every label with its message count, as a dict.
+
+    One grouped scan serves both halves of the chrome — the rail's mailbox
+    counts and the user-label list. Fetching them separately meant two scans of
+    a million-row table on every page render; the group-by costs the same
+    whether you want nine labels or all of them, so do it once.
+    """
+    raw_rows = conn.execute(
+        "select label, count(*) from labels group by label"
+    ).fetchall()
+    return {str(r[0]): int(r[1]) for r in (_row(rr) for rr in raw_rows)}

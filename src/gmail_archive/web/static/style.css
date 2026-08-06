@@ -1,372 +1,406 @@
-/* ── Reset & base ────────────────────────────────────────────── */
+/* gmail-archive — a Gmail-shaped skin over a read-only mail archive.
+ *
+ * Layout is a fixed top bar over a two-column shell: a scrolling label rail
+ * and a scrolling content pane. Only the panes scroll, not the page, which is
+ * what makes a list of a few hundred thousand messages feel like a mail client
+ * rather than a web page.
+ *
+ * No build step and no framework: one stylesheet, served same-origin. */
+
+:root {
+  --bg: #f6f8fc;
+  --surface: #ffffff;
+  --line: #e0e3e7;
+  --text: #202124;
+  --text-dim: #5f6368;
+  --text-faint: #80868b;
+  --accent: #c5221f;          /* Gmail red, used sparingly */
+  --accent-soft: #fce8e6;
+  --selected: #d3e3fd;
+  --hover: #f2f6fc;
+  --star: #f4b400;
+  --rail-w: 256px;
+  --topbar-h: 64px;
+}
+
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
+html, body { height: 100%; }
+
 body {
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-  font-size: 16px;
-  line-height: 1.5;
-  color: #1a1a1a;
-  background: #f5f5f5;
+  font-family: "Google Sans", Roboto, -apple-system, BlinkMacSystemFont,
+               "Segoe UI", Arial, sans-serif;
+  font-size: 14px;
+  line-height: 1.4;
+  color: var(--text);
+  background: var(--bg);
+  overflow: hidden;   /* the panes scroll, never the page */
 }
 
-a { color: #1a73e8; text-decoration: none; }
-a:hover { text-decoration: underline; }
+a { color: inherit; text-decoration: none; }
 
-/* ── Navigation ─────────────────────────────────────────────── */
-nav {
+/* ── Top bar ──────────────────────────────────────────────────── */
+.topbar {
+  height: var(--topbar-h);
   display: flex;
   align-items: center;
-  gap: 1.5rem;
-  padding: 0.75rem 1.5rem;
-  background: #1a1a1a;
+  gap: 16px;
+  padding: 0 16px;
+  background: var(--bg);
+  border-bottom: 1px solid transparent;
+}
+
+.brand { display: flex; align-items: center; gap: 10px; width: calc(var(--rail-w) - 16px); }
+
+.brand-mark {
+  width: 34px; height: 34px;
+  display: grid; place-items: center;
+  border-radius: 50%;
+  background: var(--accent);
   color: #fff;
-}
-
-.nav-brand {
   font-weight: 700;
-  font-size: 1.1rem;
-  color: #fff !important;
+  font-size: 18px;
 }
 
-.nav-links { display: flex; gap: 1rem; }
-.nav-links a { color: #ccc; }
-.nav-links a:hover { color: #fff; }
+.brand-name { font-size: 21px; color: var(--text-dim); letter-spacing: -0.2px; }
 
-/* ── Main content ───────────────────────────────────────────── */
-/* 95% of the viewport rather than a fixed column: the message tables carry
-   full email addresses, and a 960px cap truncated the From field on every
-   row while leaving most of a wide monitor empty. */
-main {
-  width: 95%;
-  max-width: 95%;
-  margin: 2rem auto;
-  padding: 0 1rem;
-}
-
-h1 { font-size: 1.5rem; margin-bottom: 1rem; }
-h2 { font-size: 1.15rem; margin: 1.5rem 0 0.5rem; }
-
-/* ── Stats grid ─────────────────────────────────────────────── */
-.stats-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
-  gap: 1rem;
-  margin-bottom: 2rem;
-}
-
-.stat-card {
-  background: #fff;
-  border: 1px solid #ddd;
+.topsearch {
+  flex: 1;
+  max-width: 720px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 46px;
+  padding: 0 14px;
   border-radius: 8px;
-  padding: 1rem;
-  text-align: center;
+  background: #eaf1fb;
 }
 
-.stat-value {
-  display: block;
-  font-size: 1.75rem;
-  font-weight: 700;
-  color: #1a73e8;
+.topsearch:focus-within { background: #fff; box-shadow: 0 1px 6px rgba(32,33,36,.28); }
+
+.topsearch-icon {
+  border: 0; background: none; cursor: pointer;
+  font-size: 16px; color: var(--text-dim); line-height: 1;
 }
 
-.stat-label {
-  display: block;
-  font-size: 0.85rem;
-  color: #666;
-  margin-top: 0.25rem;
+.topsearch-input {
+  flex: 1; border: 0; background: none; outline: none;
+  font-size: 15px; color: var(--text);
 }
 
-/* ── Detail tables ───────────────────────────────────────────── */
-.stats-detail table,
-.message-meta table {
-  width: 100%;
-  border-collapse: collapse;
-  background: #fff;
-  border: 1px solid #ddd;
-  border-radius: 8px;
-  overflow: hidden;
+.topbar-right { margin-left: auto; }
+
+.readonly-chip {
+  font-size: 11px; letter-spacing: .4px; text-transform: uppercase;
+  color: var(--text-dim);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 4px 10px;
+  background: var(--surface);
+  cursor: help;
 }
 
-.stats-detail td,
-.message-meta th,
-.message-meta td {
-  padding: 0.5rem 0.75rem;
-  border-bottom: 1px solid #eee;
-  font-size: 0.9rem;
+/* ── Shell ────────────────────────────────────────────────────── */
+.shell {
+  display: flex;
+  height: calc(100vh - var(--topbar-h));
 }
 
-.message-meta th {
-  text-align: left;
-  font-weight: 600;
-  color: #555;
-  width: 120px;
-  background: #fafafa;
-}
-
-.stats-detail tr:last-child td,
-.message-meta tr:last-child td { border-bottom: none; }
-
-/* ── Message list table ─────────────────────────────────────── */
-.message-list {
-  width: 100%;
-  border-collapse: collapse;
-  background: #fff;
-  border: 1px solid #ddd;
-  border-radius: 8px;
-  overflow: hidden;
-}
-
-.message-list th {
-  background: #fafafa;
-  padding: 0.5rem 0.75rem;
-  text-align: left;
-  font-size: 0.8rem;
-  font-weight: 600;
-  color: #555;
-  border-bottom: 1px solid #ddd;
-}
-
-.message-list td {
-  padding: 0.5rem 0.75rem;
-  border-bottom: 1px solid #eee;
-  font-size: 0.9rem;
-}
-
-.message-list tr:last-child td { border-bottom: none; }
-
-.date-cell { white-space: nowrap; font-size: 0.85rem; color: #666; vertical-align: top; }
-
-/* Second line under the absolute timestamp. Dimmer and smaller: the exact
-   date is the fact, the age is the orientation. */
-.date-relative { display: block; font-size: 0.75rem; color: #999; }
-.date-relative-inline { font-size: 0.85rem; color: #999; }
-
-/* No max-width — the ellipsis is a last resort at narrow viewports now that
-   the page is 95% wide, not something every row hits. `title` on the cell
-   keeps the full address reachable when it does trigger. */
-.addr-cell {
-  font-size: 0.85rem;
-  color: #555;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  max-width: 24rem;
-}
-.count-cell { text-align: right; font-variant-numeric: tabular-nums; }
-.snippet-cell { font-size: 0.85rem; color: #444; }
-.snippet-cell mark { background: #fff3a8; padding: 0 2px; }
-
-/* ── Labels ─────────────────────────────────────────────────── */
-.labels { margin: 1rem 0; display: flex; flex-wrap: wrap; gap: 0.4rem; }
-
-.label-badge {
-  display: inline-block;
-  background: #e8f0fe;
-  color: #1a73e8;
-  font-size: 0.8rem;
-  padding: 0.2rem 0.5rem;
-  border-radius: 4px;
-  border: 1px solid #c6dafc;
-}
-
-.filter-badge {
-  background: #e8f0fe;
-  padding: 0.4rem 0.75rem;
-  border-radius: 6px;
-  margin-bottom: 1rem;
-  font-size: 0.9rem;
-}
-
-.clear-filter { font-weight: 700; margin-left: 0.5rem; }
-
-/* ── Label list ─────────────────────────────────────────────── */
-.label-list {
-  width: 100%;
-  border-collapse: collapse;
-  background: #fff;
-  border: 1px solid #ddd;
-  border-radius: 8px;
-  overflow: hidden;
-}
-
-.label-list th {
-  background: #fafafa;
-  padding: 0.5rem 0.75rem;
-  text-align: left;
-  font-size: 0.8rem;
-  font-weight: 600;
-  color: #555;
-  border-bottom: 1px solid #ddd;
-}
-
-.label-list td {
-  padding: 0.5rem 0.75rem;
-  border-bottom: 1px solid #eee;
-  font-size: 0.9rem;
-}
-
-.label-list tr:last-child td { border-bottom: none; }
-
-/* ── Message body ────────────────────────────────────────────── */
-.message-body { margin-top: 1.5rem; }
-
-.text-body {
-  background: #fff;
-  border: 1px solid #ddd;
-  border-radius: 8px;
-  padding: 1rem;
-  font-family: "SF Mono", "Fira Code", "Fira Mono", Menlo, Consolas, monospace;
-  font-size: 0.85rem;
-  line-height: 1.4;
-  white-space: pre-wrap;
-  overflow-x: auto;
-  max-height: 600px;
+.rail {
+  width: var(--rail-w);
+  flex: 0 0 var(--rail-w);
+  padding: 8px 8px 32px 8px;
   overflow-y: auto;
 }
 
-.html-body-container {
-  background: #fff;
-  border: 1px solid #ddd;
-  border-radius: 8px;
-  overflow: hidden;
+.rail-item {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  height: 32px;
+  padding: 0 12px 0 20px;
+  border-radius: 0 16px 16px 0;
+  color: var(--text);
+  font-size: 14px;
 }
 
-.html-body {
-  width: 100%;
-  height: 500px;
-  border: none;
+.rail-item:hover { background: #eaecef; }
+
+.rail-item-active { background: var(--accent-soft); font-weight: 700; color: #b31412; }
+
+.rail-label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rail-count { font-size: 12px; color: var(--text-dim); font-variant-numeric: tabular-nums; }
+.rail-item-active .rail-count { color: #b31412; }
+
+.rail-section {
+  padding: 18px 20px 6px;
+  font-size: 11px; letter-spacing: .8px; text-transform: uppercase;
+  color: var(--text-faint);
 }
 
-/* ── Buttons & actions ──────────────────────────────────────── */
-.message-actions { margin: 1rem 0; }
+.rail-more { font-size: 13px; color: var(--text-dim); padding-left: 46px; }
+
+/* Icon glyphs drawn in CSS — no icon font, no sprite, no extra request. */
+.rail-icon { width: 18px; height: 18px; flex: none; position: relative; opacity: .75; }
+.rail-icon::before {
+  position: absolute; inset: 0;
+  display: grid; place-items: center;
+  font-size: 15px; line-height: 1;
+}
+.rail-icon-inbox::before     { content: "\1F4E5"; }
+.rail-icon-star::before      { content: "\2605"; color: var(--star); }
+.rail-icon-important::before { content: "\25B8"; }
+.rail-icon-sent::before      { content: "\27A4"; }
+.rail-icon-draft::before     { content: "\270E"; }
+.rail-icon-chat::before      { content: "\1F4AC"; }
+.rail-icon-spam::before      { content: "\26A0"; }
+.rail-icon-archive::before   { content: "\1F5C4"; }
+.rail-icon-all::before       { content: "\2709"; }
+.rail-icon-label::before     { content: "\1F3F7"; }
+.rail-icon-stats::before     { content: "\1F4CA"; }
+
+/* ── Content pane ─────────────────────────────────────────────── */
+.content {
+  flex: 1;
+  min-width: 0;
+  margin: 0 16px 16px 0;
+  background: var(--surface);
+  border-radius: 16px;
+  overflow-y: auto;
+  box-shadow: inset 0 0 0 1px rgba(0,0,0,.04);
+}
+
+/* ── Inbox category tabs ──────────────────────────────────────── */
+.tabs { display: flex; border-bottom: 1px solid var(--line); padding: 0 8px; }
+
+.tab {
+  padding: 14px 22px;
+  font-size: 14px;
+  color: var(--text-dim);
+  border-bottom: 3px solid transparent;
+  white-space: nowrap;
+}
+
+.tab:hover { background: var(--hover); }
+.tab-active { color: #d93025; border-bottom-color: #d93025; font-weight: 700; }
+
+/* ── List header ──────────────────────────────────────────────── */
+.listbar {
+  display: flex; align-items: baseline; gap: 12px;
+  padding: 14px 20px;
+  border-bottom: 1px solid var(--line);
+}
+
+.listbar-title { font-size: 15px; font-weight: 700; }
+.listbar-count { font-size: 12px; color: var(--text-dim); }
+
+.sortbar { margin-left: auto; font-size: 12px; display: flex; gap: 10px; }
+.sortbar a { color: #1a73e8; }
+.sort-active { color: var(--text); }
+
+/* ── Message rows ─────────────────────────────────────────────── */
+.rows { display: flex; flex-direction: column; }
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 40px;
+  padding: 0 20px 0 12px;
+  border-bottom: 1px solid #f1f3f4;
+  font-size: 14px;
+  color: var(--text-dim);
+}
+
+.row:hover {
+  box-shadow: inset 1px 0 0 #dadce0, inset -1px 0 0 #dadce0, 0 1px 2px rgba(60,64,67,.3);
+  z-index: 1;
+}
+
+/* Gmail's single strongest list signal: unread rows go black and bold. */
+.row-unread { background: #fff; font-weight: 700; color: var(--text); }
+.row-unread .row-snippet { color: var(--text-dim); font-weight: 400; }
+
+.row-star, .row-important {
+  flex: none; width: 18px; text-align: center;
+  color: #dadce0; font-size: 15px; line-height: 1;
+}
+.row-star-on { color: var(--star); }
+.row-important-on { color: #f2b21b; }
+
+.row-sender {
+  flex: 0 0 190px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+.row-main {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+.row-subject { color: var(--text); }
+.row-unread .row-subject { font-weight: 700; }
+.row-snippet { color: var(--text-faint); font-weight: 400; }
+.row-snippet mark { background: #fff3a8; padding: 0 1px; }
+
+.row-chip {
+  display: inline-block;
+  margin: 0 4px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: #e8eaed;
+  color: var(--text-dim);
+  font-size: 11px;
+  font-weight: 400;
+  vertical-align: 1px;
+}
+
+.row-date {
+  flex: 0 0 84px;
+  text-align: right;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.row-unread .row-date { font-weight: 700; color: var(--text); }
+
+/* ── Pager ────────────────────────────────────────────────────── */
+.pager { display: flex; gap: 12px; justify-content: flex-end; padding: 16px 20px 32px; }
+.pager a {
+  padding: 8px 16px; border: 1px solid var(--line); border-radius: 999px;
+  font-size: 13px; color: var(--text-dim); background: var(--surface);
+}
+.pager a:hover { background: var(--hover); }
+
+.empty { padding: 40px 20px; color: var(--text-dim); }
+.empty a { color: #1a73e8; }
+
+/* ── Conversation view ────────────────────────────────────────── */
+.conv { padding: 20px 28px 60px; max-width: 1100px; }
+
+.conv-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 22px; }
+.conv-back { font-size: 20px; color: var(--text-dim); }
+.conv-subject { font-size: 22px; font-weight: 400; line-height: 1.3; }
+
+.conv-meta { display: flex; align-items: flex-start; gap: 14px; margin-bottom: 18px; }
+
+.conv-avatar {
+  width: 40px; height: 40px; flex: none;
+  border-radius: 50%;
+  background: #1a73e8; color: #fff;
+  display: grid; place-items: center;
+  font-size: 18px; font-weight: 500;
+}
+
+.conv-who { flex: 1; min-width: 0; }
+.conv-from { font-size: 14px; }
+.conv-addr, .conv-to { color: var(--text-dim); font-size: 12px; }
+.conv-date { font-size: 12px; color: var(--text-dim); white-space: nowrap; text-align: right; }
+.conv-ago { display: block; color: var(--text-faint); }
+
+.conv-body { margin: 8px 0 24px; }
+
+.text-body {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.html-body { width: 100%; min-height: 480px; border: 0; background: #fff; }
+
+.conv-actions { display: flex; gap: 10px; margin-bottom: 24px; }
 
 .btn {
   display: inline-block;
-  background: #1a73e8;
-  color: #fff;
-  padding: 0.4rem 0.9rem;
-  border-radius: 6px;
-  font-size: 0.85rem;
-  border: none;
-  cursor: pointer;
+  padding: 8px 16px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  font-size: 13px;
+  color: var(--text-dim);
+  background: var(--surface);
+}
+.btn:hover { background: var(--hover); }
+
+.conv-details summary { cursor: pointer; color: var(--text-dim); font-size: 13px; }
+
+.kv { border-collapse: collapse; margin-top: 12px; font-size: 13px; }
+.kv th {
+  text-align: left; font-weight: 500; color: var(--text-dim);
+  padding: 6px 20px 6px 0; vertical-align: top; white-space: nowrap;
+}
+.kv td { padding: 6px 0; overflow-wrap: anywhere; }
+.kv code { font-size: 12px; }
+
+/* ── Statistics ───────────────────────────────────────────────── */
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 12px;
+  padding: 20px;
 }
 
-.btn:hover { background: #1557b0; text-decoration: none; }
-
-/* ── Search ──────────────────────────────────────────────────── */
-.search-form {
-  display: flex;
-  gap: 0.5rem;
-  margin-bottom: 1.5rem;
+.stat-card {
+  background: var(--bg);
+  border-radius: 12px;
+  padding: 18px;
+  text-align: center;
 }
 
-.search-input {
-  flex: 1;
-  padding: 0.5rem 0.75rem;
-  border: 1px solid #ddd;
-  border-radius: 6px;
-  font-size: 1rem;
+.stat-value { display: block; font-size: 24px; font-variant-numeric: tabular-nums; }
+.stat-label { display: block; font-size: 12px; color: var(--text-dim); margin-top: 4px; }
+
+.stats-grid + .kv { padding: 0 20px 40px; }
+
+/* ── Label wall ───────────────────────────────────────────────── */
+.chipwall { display: flex; flex-wrap: wrap; gap: 8px; padding: 20px; }
+
+.chipwall-item {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 14px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface);
+  font-size: 13px;
 }
+.chipwall-item:hover { background: var(--hover); }
+.chipwall-count { color: var(--text-faint); font-size: 12px; font-variant-numeric: tabular-nums; }
 
-.search-input:focus { outline: none; border-color: #1a73e8; }
-
-.result-count { margin-bottom: 0.25rem; font-size: 0.9rem; color: #555; }
-
-.sort-controls { margin-bottom: 1rem; font-size: 0.9rem; color: #555; }
-.sort-active { color: #202124; }
-
-/* ── Raw source view ────────────────────────────────────────── */
-.raw-subject { font-size: 1rem; margin-bottom: 0.25rem; }
-.raw-meta { font-size: 0.85rem; color: #666; margin-bottom: 1rem; }
+/* ── Raw source view ──────────────────────────────────────────── */
+.raw-subject { padding: 18px 20px 0; font-size: 15px; font-weight: 700; }
+.raw-meta { padding: 4px 20px 12px; font-size: 12px; color: var(--text-dim); }
 
 .raw-truncated {
+  margin: 0 20px 12px;
   background: #fff8e1;
   border: 1px solid #f0d98c;
-  border-radius: 6px;
-  padding: 0.5rem 0.75rem;
-  font-size: 0.85rem;
-  margin-bottom: 1rem;
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-size: 13px;
 }
 
 /* pre-wrap, not pre: header continuation lines and long base64 runs would
    otherwise push a horizontal scrollbar across the whole page. */
 .raw-source {
-  background: #fff;
-  border: 1px solid #ddd;
-  border-radius: 8px;
-  padding: 1rem;
+  margin: 0 20px 40px;
+  padding: 16px;
+  background: var(--bg);
+  border-radius: 12px;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 0.8rem;
-  line-height: 1.45;
+  font-size: 12px;
+  line-height: 1.5;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 
-/* ── Pagination ──────────────────────────────────────────────── */
-.pagination {
-  margin-top: 1rem;
-  display: flex;
-  gap: 0.5rem;
-  justify-content: center;
-}
+.message-actions { display: flex; gap: 10px; padding: 0 20px 16px; }
 
-.next-page, .prev-page {
-  display: inline-block;
-  background: #fff;
-  color: #1a73e8;
-  padding: 0.4rem 0.9rem;
-  border: 1px solid #ddd;
-  border-radius: 6px;
-  font-size: 0.85rem;
-}
-
-.next-page:hover, .prev-page:hover { background: #f0f4ff; text-decoration: none; }
-
-/* ── Thread view ─────────────────────────────────────────────── */
-.thread-id { margin-bottom: 1rem; font-size: 0.9rem; color: #666; }
-
-.thread-card {
-  background: #fff;
-  border: 1px solid #ddd;
-  border-radius: 8px;
-  margin-bottom: 0.5rem;
-}
-
-.thread-card-header {
-  display: flex;
-  gap: 1rem;
-  padding: 0.75rem 1rem;
-  align-items: baseline;
-  flex-wrap: wrap;
-}
-
-.thread-card-date { font-size: 0.8rem; color: #888; white-space: nowrap; }
-.thread-card-from { font-size: 0.85rem; color: #555; }
-.thread-card-subject { flex: 1; }
-
-/* ── Debug panel ────────────────────────────────────────────── */
-.debug-panel {
-  margin-top: 2rem;
-  padding: 0.75rem 1rem;
-  background: #fffbe6;
-  border: 1px solid #f0d97a;
-  border-radius: 8px;
-  font-size: 0.85rem;
-}
-
-.debug-panel summary {
-  cursor: pointer;
-  font-weight: 600;
-  color: #8a6d00;
-}
-
-.debug-panel ul { margin-top: 0.5rem; padding-left: 1.5rem; }
-.debug-panel li { margin-bottom: 0.25rem; }
-
-/* ── Empty state ────────────────────────────────────────────── */
-.empty-state {
-  text-align: center;
-  color: #888;
-  padding: 3rem 1rem;
-  font-size: 1rem;
+/* ── Narrow screens ───────────────────────────────────────────── */
+@media (max-width: 900px) {
+  .rail { display: none; }
+  .brand { width: auto; }
+  .content { margin: 0 8px 8px; }
+  .row-sender { flex-basis: 120px; }
+  .row-snippet { display: none; }
 }
