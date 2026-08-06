@@ -28,11 +28,31 @@ rather than whatever one corpus happens to contain.
 
 | Decision | Choice | Why |
 |---|---|---|
-| `raw_sha256` hashes | The **unquoted** RFC822 message | mbox prefixes body lines starting with `From ` with `>`, so file bytes are not the original. Unquoting means `.eml` export is correct; mbox export re-quotes and still round-trips byte-identically. Measured: ~1% of messages carry a quoted line, and *no* message contains a bare `From ` body line — Takeout quotes consistently, so unquoting is deterministic |
+| `raw_sha256` hashes | The **unquoted** RFC822 message | mbox prefixes body lines starting with `From ` with `>`, so file bytes are not the original. Unquoting means `.eml` export is correct; mbox export re-quotes and still round-trips byte-identically. **Measured, and it corrects this row's original reasoning: Takeout writes mboxrd, not mboxo** — see below |
 | Postgres | 18, major pinned | Longest support runway for a store meant to outlive the hardware |
 | Base image | `python:3.13.14-slim-trixie`, exact patch | Chainguard cannot be version-pinned on the free tier, and stdlib `email`/`mailbox` behavior changes between Python minors |
 | Licence | MIT, from commit #1 | Adding it later does not cleanly cover earlier commits |
 | Schema extras | `in_reply_to`, `references_ids`, `bcc_addrs`, `reply_to`, and `messages.raw_sha256` FK to `blobs` | All cheap now; the FK turns "row points at a missing blob" into a constraint rather than a report |
+
+### The quoting flavour, since it decides what `raw_sha256` hashes
+
+This row was written assuming **mboxo**, where a writer quotes only a bare
+`From ` line and leaves `>From ` alone. That makes unquoting ambiguous: a file
+`>From ` could be an original `From ` (quoted) or an original `>From `
+(untouched).
+
+Measured on the real export: **3,855** `>From ` lines, **86** `>>From `, and
+**zero** `>>>From `. All 86 of the `>>From ` lines sit among *unquoted*
+neighbours — 84 with plain text on both sides. A genuinely double-quoted reply
+line would be surrounded by other `>>` lines, and none are. That is the
+signature of **mboxrd**, where the writer prefixes any `>*From `, so the inverse
+is to strip exactly one `>`.
+
+It is evidence, not proof. `parser.unquote_mbox` therefore strips one `>` and
+records an `unquote-ambiguous` warning on any line that carried more than one —
+86 lines corpus-wide, findable later rather than silently rewritten. The file
+round-trips byte-identically under either reading, so the exposure is confined
+to `.eml` export fidelity on those lines.
 
 ## Stack
 
