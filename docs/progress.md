@@ -3,9 +3,9 @@
 What has actually been built, phase by phase, so this can be picked up cold.
 The intended shape of the whole project is in [plan.md](plan.md).
 
-**Current position: Phases 0 and 1 complete, reviewed, and tagged. The real
-Takeout export has since arrived and been surveyed, correcting several plan
-assumptions. Next step is Phase 2 — the synthetic mbox fixture generator.**
+**Current position: Phases 0–5 complete. Tested on Linux (lunix7100) against a
+1000-message fixture — ingest pipeline runs end-to-end. Next step is Phase 6:
+verify / query CLI enhancements.**
 
 Live status is the [issue list](https://github.com/evanwtf/gmail-archive/issues),
 one issue per phase, closed at its gate — that is authoritative if this file and
@@ -17,12 +17,13 @@ which is what a tracker is bad at.
 ```bash
 uv sync
 uv run pre-commit install          # the hooks are the only safety net; no CI yet
-uv run pytest                      # 34 passed
+uv run pytest                      # 166 passed, 20 skipped (integration), 1 deselected
 uv run ruff check . && uv run ruff format --check .
 uv run mypy                        # --strict, configured in pyproject.toml
 
 cp .env.example .env               # then set POSTGRES_PASSWORD
 docker compose up -d
+docker compose run --rm web migrate   # apply schema before first ingest
 curl localhost:8000/healthz        # {"status":"ok"}
 curl localhost:8000/readyz         # {"status":"ok"} — real Postgres round-trip
 curl localhost:8000/version
@@ -351,6 +352,7 @@ store, and Postgres. Key design:
 
 ### CLI commands added
 
+- `gmail-archive migrate` — apply pending database schema migrations
 - `gmail-archive ingest MBOX` — run the ingest pipeline
 - `gmail-archive stats` — print archive statistics
 - `gmail-archive search QUERY` — full-text search
@@ -367,6 +369,44 @@ uv run pytest                 # 166 passed, 20 skipped (integration), 1 deselect
 uv run ruff check . && uv run mypy    # clean
 ```
 
+## Linux testing — bugs found and fixed
+
+The pipeline was tested on a Linux machine (lunix7100, `docker compose`) against a
+1000-message synthetic fixture. Three issues were found and fixed:
+
+1. **Missing `migrate` CLI command.** The schema must be applied before `ingest`
+   can run on a fresh database, but no CLI command exposed the migration runner.
+   Fixed by adding a `migrate` command to `cli.py`.
+
+2. **Dockerfile did not copy `migrations/` into the runtime stage.** The builder
+   stage copies the full repo, but the runtime stage only copied `/app/.venv` and
+   `/app/src`. The `migrate` command crashed with
+   `FileNotFoundError: no migrations directory at /app/migrations`. Fixed by
+   adding `COPY --from=builder /app/migrations /app/migrations` to the Dockerfile.
+
+3. **`parse_warnings` JSON serialization in COPY.** The `parse_warnings` column is
+   `jsonb`, but psycopg's COPY path sees a Python `list[dict]` and tries to dump
+   it as a Postgres `text[]` array, then fails with
+   `cannot adapt type 'dict'`. Fixed by serializing to a JSON string with
+   `json.dumps()` before passing to COPY.
+
+### Corrected workflow
+
+```bash
+# 1. Build the image (after pulling new code)
+docker compose build web
+
+# 2. Apply the schema
+docker compose run --rm web migrate
+
+# 3. Ingest
+docker compose run --rm -v /tmp:/mbox:ro web ingest /mbox/test.mbox
+
+# 4. Query
+docker compose run --rm web stats
+docker compose run --rm web search "hello"
+```
+
 ## Open questions
 
 None blocking. Deliberately deferred:
@@ -374,10 +414,18 @@ None blocking. Deliberately deferred:
 - **CI.** No workflow yet, by choice — rapid iteration until the shape stops
   moving. Until then the pre-commit hooks are the entire safety net, which is why
   `uv run pre-commit install` is not optional.
-- ~~**Attachment extraction default.**~~ **Answered** by the survey: extracting
-  every attachment adds roughly a quarter to the blob store, not the doubling
-  that motivated making it a knob, and only ~6% of attachment parts are
-  byte-identical to another — so dedup is not the win the plan assumed either. It
-  defaults on. Caveat kept in `plan.md`: the figure is from a 1-in-40 sample and
-  attachment bytes are skewed by rare large messages, so a full attachment pass
-  should confirm it before Phase 5 relies on the number.
+- **Attachment extraction default.** Answered by the survey: extracting every
+  attachment adds roughly a quarter to the blob store, not the doubling that
+  motivated making it a knob, and only ~6% of attachment parts are byte-identical
+  to another — so dedup is not the win the plan assumed either. It defaults on.
+  Caveat kept in `plan.md`: the figure is from a 1-in-40 sample and attachment
+  bytes are skewed by rare large messages, so a full attachment pass should
+  confirm it before Phase 5 relies on the number.
+
+## Next step — Phase 6: Verify / query CLI
+
+Tracked in [issue #5](https://github.com/evanwtf/gmail-archive/issues/5);
+specified in [plan.md](plan.md#phase-6--verify--query-cli).
+
+Enhancements to the query CLI: pagination, export, label listing, and a `verify`
+command that reconciles the database against the source mbox file.
