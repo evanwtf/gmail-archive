@@ -189,7 +189,7 @@ Completed phases:
 | 4 | Schema and content-addressed blob store |
 | 5 | Resumable ingest pipeline |
 | 6 | Verify, export, labels CLI commands |
-| 7 | Web UI (FastAPI, Jinja2, HTMX, nh3) |
+| 7 | Web UI (FastAPI, Jinja2, nh3; the HTMX tag never executes — [#14](https://github.com/evanwtf/gmail-archive/issues/14)) |
 | 8 | Gmail API sync (interface + mocks) |
 | 9 | Read-only IMAP server (pymap) — built, does not work yet ([#8](https://github.com/evanwtf/gmail-archive/issues/8)) |
 | 10 | Wrap up (README, runbook, ADRs, AGENTS.md) |

@@ -7,7 +7,8 @@ key files. It is generated from the actual codebase state.
 
 gmail-archive ingests a Google Takeout Gmail mbox export into Postgres for
 permanent local archival, search, and export. It provides a web UI (FastAPI +
-Jinja2 + HTMX) and a read-only IMAP server (pymap).
+Jinja2; an HTMX script tag is present but fails SRI and never runs, #14) and a
+read-only IMAP server (pymap, currently non-functional — #11).
 
 **Stack:** Python 3.13, uv, psycopg 3.x, FastAPI, pymap, click, pytest,
 ruff + mypy --strict, pre-commit.
@@ -73,7 +74,8 @@ gmail-archive/
 
 ### Database
 - Raw message bytes are on disk (blob store), not in Postgres
-- `raw_sha256` is the primary key for messages (hash of unquoted RFC822)
+- `raw_sha256` is the primary key for messages (hash of unquoted RFC822 —
+  intended, but ingest does not actually unquote today: #10)
 - All message fields are best-effort (nullable)
 - Keyset pagination: `(internal_date DESC NULLS LAST, raw_sha256 DESC)`
 - Migrations are numbered `.sql` files applied by an in-repo runner
@@ -116,6 +118,7 @@ See `docs/adr/` for full ADRs:
 
 1. **Content-addressed blob store** — raw bytes on disk, not in Postgres
 2. **mboxrd unquoting** — hash the unquoted RFC822, not the file bytes
+   (decided, not implemented — see #10)
 3. **Keyset pagination** — `NULLS LAST` for the ~2.7% of messages without dates
 4. **pymap for IMAP** — protocol library over hand-rolling
 5. **Read-only archive** — no mutation after ingest
