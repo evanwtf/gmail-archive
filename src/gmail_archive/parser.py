@@ -28,7 +28,7 @@ import email.utils
 import hashlib
 import re
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from io import StringIO
 
@@ -237,10 +237,12 @@ def _date(value: str | None, warnings: list[ParseWarning]) -> datetime | None:
         if offset is not None and abs(offset) > timedelta(hours=15, minutes=59):
             warnings.append(ParseWarning(Warn.DATE_TZ_OUT_OF_RANGE, str(offset)))
             return None
-    # A year outside this range is a broken header, not history. Kept rather
-    # than discarded — the real export contains one — but flagged.
-    if not (1970 <= parsed.year <= 2100):
-        warnings.append(ParseWarning(Warn.DATE_IMPLAUSIBLE, str(parsed.year)))
+    # A date more than 90 days in the future is a broken header, not history.
+    # Kept rather than discarded — the real export contains one — but flagged.
+    _plausible_upper = datetime.now(UTC) + timedelta(days=90)
+    _parsed_aware = parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
+    if not (1970 <= parsed.year <= _plausible_upper.year) or _parsed_aware > _plausible_upper:
+        warnings.append(ParseWarning(Warn.DATE_IMPLAUSIBLE, str(parsed)))
     return parsed
 
 

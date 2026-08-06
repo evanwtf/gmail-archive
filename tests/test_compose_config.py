@@ -46,12 +46,12 @@ class TestWebService:
         argv = [*(web.get("entrypoint") or []), *(web.get("command") or [])]
         assert "--reload" not in argv
 
-    def test_published_only_on_loopback(self) -> None:
-        # The UI has no authentication. Binding it to 0.0.0.0 on the host would
-        # serve the whole archive to anything that can route to the box.
+    def test_published_on_all_interfaces(self) -> None:
+        # The user chose to expose the web UI on 0.0.0.0. The archive has no
+        # authentication, so this is only appropriate on a trusted network.
         for mapping in _service("web")["ports"]:
-            assert str(mapping).startswith("127.0.0.1:"), (
-                f"{mapping!r} must be published on 127.0.0.1 only"
+            assert str(mapping).startswith("0.0.0.0:"), (
+                f"{mapping!r} must be published on 0.0.0.0"
             )
 
     def test_waits_for_postgres_and_the_permissions_one_shot(self) -> None:

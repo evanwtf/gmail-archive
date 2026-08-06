@@ -113,10 +113,10 @@ def stats(conn: psycopg.Connection[object]) -> ArchiveStats:
         "  (select coalesce(sum(size_bytes), 0) from messages) as total_bytes,"
         "  (select min(internal_date) from messages"
         "    where internal_date >= '1970-01-01'"
-        "    and internal_date < '2101-01-01') as date_earliest,"
+        "    and internal_date <= now() + interval '90 days') as date_earliest,"
         "  (select max(internal_date) from messages"
         "    where internal_date >= '1970-01-01'"
-        "    and internal_date < '2101-01-01') as date_latest,"
+        "    and internal_date <= now() + interval '90 days') as date_latest,"
         "  (select coalesce(sum(size_bytes), 0) from blobs) as blob_bytes"
     ).fetchone()
     assert raw is not None
