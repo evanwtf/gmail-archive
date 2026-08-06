@@ -73,6 +73,17 @@ class TestSearchSorts:
     def test_default_sort_is_a_known_key(self) -> None:
         assert DEFAULT_SEARCH_SORT in SEARCH_SORTS
 
+    def test_default_sort_is_newest_first(self) -> None:
+        # Deliberate: the common query here is a sender or a domain, where
+        # every hit is equally "relevant" and ts_rank orders arbitrarily.
+        assert DEFAULT_SEARCH_SORT == "date"
+        assert SEARCH_SORTS[DEFAULT_SEARCH_SORT].startswith("internal_date desc")
+
+    def test_default_sort_does_not_rank(self) -> None:
+        # ts_rank in the default ordering would mean paying for the rank
+        # expression on every search that never displays it.
+        assert "ts_rank" not in SEARCH_SORTS[DEFAULT_SEARCH_SORT]
+
     def test_expected_sorts_are_offered(self) -> None:
         assert set(SEARCH_SORTS) == {"relevance", "date", "date-asc"}
 

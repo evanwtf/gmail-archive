@@ -253,8 +253,8 @@ def search_page(
 ) -> HTMLResponse:
     """Full-text search with highlighted snippets.
 
-    ``sort`` is one of ``relevance`` (default), ``date`` (newest first), or
-    ``date-asc``. An unrecognised value falls back to the default rather than
+    ``sort`` is one of ``date`` (newest first, the default), ``date-asc``, or
+    ``relevance``. An unrecognised value falls back to the default rather than
     erroring — a hand-edited query string should not produce a 500.
     """
     if sort not in SEARCH_SORTS:

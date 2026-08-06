@@ -150,7 +150,10 @@ SEARCH_SORTS: dict[str, str] = {
     "date-asc": "internal_date asc nulls last, raw_sha256 asc",
 }
 
-DEFAULT_SEARCH_SORT = "relevance"
+#: Newest first, not relevance. For a personal archive the common query is a
+#: sender or a domain, where every hit is equally "relevant" and ts_rank
+#: effectively returns an arbitrary order — so the useful default is recency.
+DEFAULT_SEARCH_SORT = "date"
 
 
 def search(
@@ -164,8 +167,9 @@ def search(
     """Full-text search over messages using `websearch_to_tsquery`.
 
     Returns messages with highlighted snippets, ordered by `sort` — one of the
-    keys in `SEARCH_SORTS`. An unknown key raises `ValueError` rather than
-    quietly falling back, so a typo in a caller is loud.
+    keys in `SEARCH_SORTS`, defaulting to newest first. An unknown key raises
+    `ValueError` rather than quietly falling back, so a typo in a caller is
+    loud.
 
     Undated messages sort last under every ordering, including `date-asc`:
     a missing `Date` is unknown, not old, and putting nulls first would open

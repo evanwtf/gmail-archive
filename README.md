@@ -96,8 +96,8 @@ The web UI provides:
   iframe), labels, parse warnings
 - **Thread view** at `/thread/{thread_id}` — all messages in a thread
 - **Full-text search** at `/search` — highlighted snippets with GIN-indexed
-  tsvector search, sortable by relevance (default), newest first
-  (`&sort=date`), or oldest first (`&sort=date-asc`)
+  tsvector search, newest first by default, or `&sort=date-asc` /
+  `&sort=relevance`
 - **Label listing** at `/labels` — all labels with message counts
 - **Raw download** at `/raw/{sha256}` — `Content-Disposition: attachment`
 

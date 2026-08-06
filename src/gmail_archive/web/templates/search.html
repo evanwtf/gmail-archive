@@ -6,7 +6,7 @@
 <form action="/search" method="get" class="search-form">
   <input type="search" name="q" value="{{ query|default('', true) }}" placeholder="Search messages..." class="search-input" autofocus>
   {# Carry the chosen ordering through a new search rather than silently resetting it. #}
-  <input type="hidden" name="sort" value="{{ sort|default('relevance', true) }}">
+  <input type="hidden" name="sort" value="{{ sort|default('date', true) }}">
   <button type="submit" class="btn">Search</button>
 </form>
 
@@ -16,7 +16,7 @@
 
   {# Changing the sort resets offset: page 3 of one ordering is not page 3 of another. #}
   <p class="sort-controls">Sort:
-    {% for key, label in [("relevance", "Relevance"), ("date", "Newest first"), ("date-asc", "Oldest first")] %}
+    {% for key, label in [("date", "Newest first"), ("date-asc", "Oldest first"), ("relevance", "Relevance")] %}
       {%- if sort == key -%}
         <strong class="sort-active">{{ label }}</strong>
       {%- else -%}
