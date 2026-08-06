@@ -81,8 +81,9 @@ RUN groupadd --gid 65532 nonroot \
 # The venv is built against this exact base image's interpreter, so its
 # bin/python symlink resolves here. Ownership is set at copy time because the
 # app runs as 65532 and needs to read every file in it.
-COPY --from=builder --chown=65532:65532 /app/.venv /app/.venv
-COPY --from=builder --chown=65532:65532 /app/src   /app/src
+COPY --from=builder --chown=65532:65532 /app/.venv      /app/.venv
+COPY --from=builder --chown=65532:65532 /app/src        /app/src
+COPY --from=builder --chown=65532:65532 /app/migrations /app/migrations
 
 EXPOSE 8000
 VOLUME ["/blobs", "/data"]
