@@ -36,6 +36,7 @@ def _settings(tmp_path: Path) -> Settings:
         workers=2,
         batch_size=10,
         log_level="WARNING",
+        imap_password="",
     )
 
 

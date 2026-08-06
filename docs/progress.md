@@ -3,9 +3,9 @@
 What has actually been built, phase by phase, so this can be picked up cold.
 The intended shape of the whole project is in [plan.md](plan.md).
 
-**Current position: Phase 8 complete. Message source protocol, MboxSource adapter,
-GmailApiSource with respx mocks, and 30 tests covering pagination, retry, token
-refresh, and history sync. All tests, lint, and type checks passing.**
+**Current position: Phase 9 complete. Read-only IMAP server using pymap, with
+folder/UID model, lazy content loading from blob store, and backfill command.
+Phase 10 (README, runbook, ADRs, AGENTS.md) in progress.**
 
 Live status is the [issue list](https://github.com/evanwtf/gmail-archive/issues),
 one issue per phase, closed at its gate — that is authoritative if this file and
@@ -567,6 +567,58 @@ specified in [plan.md](plan.md#phase-8--gmail-api-sync-interface--mocks-only).
 4. **`list_all()` duplicated per source** — Python protocols don't provide
    default implementations to structural subtypes, so `list_all()` is implemented
    in each source class rather than inherited.
+
+### Verified
+
+```
+uv run pytest                 # 208 passed, 41 skipped (integration), 1 deselected
+uv run ruff check . && uv run mypy    # clean
+```
+
+## Phase 9 — Read-only IMAP server — complete
+
+Tracked in [issue #8](https://github.com/evanwtf/gmail-archive/issues/8);
+specified in [plan.md](plan.md#phase-9--read-only-imap-server).
+
+### What was built
+
+- **`src/gmail_archive/imap/`** — pymap backend plugin registered as
+  `gmail-archive` in the `pymap.backend` entry point group:
+  - `backend.py` — `GmailArchiveBackend`, `Config`, `Login`, `Identity`,
+    `Session` classes
+  - `mailbox.py` — `MailboxData` (read-only, raises `MailboxReadOnly` for
+    APPEND/COPY/MOVE/DELETE/flag updates) and `MailboxSet` (syncs folders
+    from the `labels` table on every list operation)
+  - `message.py` — `Message` and `LoadedMessage` with lazy content loading
+    from the blob store via pymap's `MessageContent.parse()`
+
+- **Migration `0002_imap.sql`** — three additions:
+  - `imap_folders` table: one row per Gmail label, with `uid_validity`
+  - `imap_uids` table: per-folder UID assignment, one row per (folder, message)
+  - `envelope` and `bodystructure` jsonb columns on `messages`, backfilled
+    from the blob store
+
+- **CLI commands**:
+  - `gmail-archive imap` — start the IMAP server (default port 1143)
+  - `gmail-archive imap-backfill` — compute envelope/bodystructure for all
+    messages and assign UIDs per folder
+
+- **Configuration**: `GMAIL_ARCHIVE_IMAP_PASSWORD` env var, `imap_password`
+  field on `Settings`, documented in `.env.example`
+
+### Key design decisions
+
+1. **pymap plugin** — The backend registers via a `pymap.backend` entry point,
+   so it can be started with `pymap.main.main()` or directly from our CLI.
+2. **Lazy content loading** — Raw RFC822 bytes are fetched from the blob store
+   only when `load_content()` is called (on FETCH), not at mailbox open time.
+   Envelope and bodystructure are cached in the database after backfill.
+3. **Read-only** — Every mutating operation raises `MailboxReadOnly`. The
+   archive is immutable by design.
+4. **Folder sync on list** — `MailboxSet._sync_folders()` runs on every
+   `list_mailboxes()` call, so new labels appear without a restart.
+5. **Single user** — One configured username/password, no multi-user support.
+   The archive is a single-user tool.
 
 ### Verified
 

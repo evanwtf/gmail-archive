@@ -1,15 +1,13 @@
 # gmail-archive
 
 Ingest a Google Takeout Gmail mbox export into Postgres for permanent local
-archival, search, and export, with a local web UI for browsing.
+archival, search, and export, with a local web UI and a read-only IMAP server
+for browsing.
 
 Roughly twenty years of mail — expect a few hundred thousand messages and tens
 of gigabytes. Raw message bytes live in a content-addressed blob store on disk,
 not in Postgres; the database holds derived metadata and the search index, so a
 `pg_dump` stays small enough to be useful.
-
-**Status: early. Nothing here is finished.** See "Project status" below for what
-actually works today.
 
 ## Personal tool, no support, no stability guarantees
 
@@ -65,6 +63,103 @@ public, and the hooks reject staged `.mbox` files, anything under `blobs/`, and
 oversized files. Without them there is nothing between a stray `git add .` and a
 permanent public commit of real mail.
 
+## Full workflow
+
+### 1. Apply the schema
+
+```bash
+docker compose run --rm web migrate
+```
+
+### 2. Ingest mail
+
+Place your Google Takeout mbox file in the mbox directory:
+
+```bash
+cp /path/to/Takeout/Mail/All.mbox ./data/mbox/
+docker compose run --rm -v ./data/mbox:/mbox:ro web ingest /mbox/All.mbox
+```
+
+The ingest pipeline is resumable and idempotent: re-running after a kill picks
+up where it left off, and re-ingesting the same file twice adds nothing.
+
+### 3. Browse the web UI
+
+```bash
+open http://localhost:8000
+```
+
+The web UI provides:
+- **Stats dashboard** at `/` — aggregate archive statistics
+- **Message list** at `/messages` — keyset-paginated message table
+- **Message detail** at `/messages/{sha256}` — headers, body (HTML in sandboxed
+  iframe), labels, parse warnings
+- **Thread view** at `/thread/{thread_id}` — all messages in a thread
+- **Full-text search** at `/search` — highlighted snippets with GIN-indexed
+  tsvector search
+- **Label listing** at `/labels` — all labels with message counts
+- **Raw download** at `/raw/{sha256}` — `Content-Disposition: attachment`
+
+### 4. Connect via IMAP
+
+```bash
+# Start the IMAP server
+GMAIL_ARCHIVE_IMAP_PASSWORD=yourpassword gmail-archive imap
+
+# Connect with any IMAP client
+#   Server: localhost, Port: 1143
+#   Username: archive, Password: yourpassword
+```
+
+Gmail labels are mapped to IMAP folders. The server is read-only.
+
+### 5. Verify integrity
+
+```bash
+docker compose run --rm web verify
+docker compose run --rm web verify --deep
+```
+
+## CLI reference
+
+| Command | Description |
+|---|---|
+| `gmail-archive version` | Print build and runtime identity |
+| `gmail-archive serve` | Run the local web UI (default port 8000) |
+| `gmail-archive gen-fixture` | Generate a synthetic mbox fixture |
+| `gmail-archive migrate` | Apply pending database schema migrations |
+| `gmail-archive ingest` | Ingest an mbox file into Postgres |
+| `gmail-archive stats` | Print archive statistics |
+| `gmail-archive search` | Full-text search over archived messages |
+| `gmail-archive verify` | Verify archive integrity |
+| `gmail-archive export` | Export messages as mbox or eml |
+| `gmail-archive labels` | List all labels with message counts |
+| `gmail-archive imap` | Start the read-only IMAP server |
+| `gmail-archive imap-backfill` | Backfill envelope/bodystructure for IMAP |
+
+## Architecture
+
+```
+                    ┌──────────────┐
+                    │  Takeout mbox │
+                    └──────┬───────┘
+                           │
+                    ┌──────▼───────┐
+                    │   Ingest     │
+                    │  pipeline    │
+                    └──┬───────┬───┘
+                       │       │
+              ┌────────▼──┐ ┌──▼────────┐
+              │  Postgres  │ │ Blob store │
+              │ (metadata) │ │ (raw bytes)│
+              └──┬──────┬──┘ └──┬────────┘
+                 │      │       │
+        ┌────────▼──┐ ┌─▼───────▼──┐
+        │  Web UI   │ │  IMAP      │
+        │ (FastAPI) │ │  (pymap)   │
+        └───────────┘ └────────────┘
+```
+
 ## Project status
 
 Work is tracked in three places, split by what each is good at:
@@ -72,30 +167,43 @@ Work is tracked in three places, split by what each is good at:
 | Where | What | Why there |
 |---|---|---|
 | [GitHub issues](https://github.com/evanwtf/gmail-archive/issues) | Live status — one issue per build phase, closed at its gate | `open`/`closed` is a real signal. A hand-edited status line goes stale silently |
-| [docs/plan.md](docs/plan.md) | The scoped specification, all phases | Reference material, versioned with the code it describes and readable with no network. Splitting one coherent spec across nine issues would fragment it |
+| [docs/plan.md](docs/plan.md) | The scoped specification, all phases | Reference material, versioned with the code it describes and readable with no network |
 | [docs/progress.md](docs/progress.md) | What was built, how to verify it, and findings worth keeping | Archaeology outlives a tracker |
+| [docs/runbook.md](docs/runbook.md) | Operations guide | Day-to-day commands and troubleshooting |
+| [docs/adr/](docs/adr/) | Architecture Decision Records | Why key decisions were made |
 
-So: **issues say where we are, `plan.md` says what we are building, `progress.md`
-says what we learned.** A phase issue links to its `plan.md` section and lists
-acceptance criteria only — it never restates the spec, so there is one place to
-change when the design moves. Phases are grouped into two milestones: *Prototype
-(Phases 2–5)*, specified seriously, and *Directional (Phases 6–10)*, where the
-shape is right but the details are guesses.
+Completed phases:
 
-Completed phases are also tagged (`git tag -n`), so a tag checkout gives a
-reviewed working state.
+| Phase | What |
+|---|---|
+| 0 | Plan and schema review |
+| 1 | Bootstrap (Docker, compose, pre-commit, tests) |
+| 2 | Synthetic mbox fixture generator |
+| 3 | Parser (bytes in, typed ParsedMessage out) |
+| 4 | Schema and content-addressed blob store |
+| 5 | Resumable ingest pipeline |
+| 6 | Verify, export, labels CLI commands |
+| 7 | Web UI (FastAPI, Jinja2, HTMX, nh3) |
+| 8 | Gmail API sync (interface + mocks) |
+| 9 | Read-only IMAP server (pymap) |
 
-Working today:
+## Test suite
 
-- Docker image (Debian slim pinned to an exact Python patch release, runs as a
-  non-root user) and a compose stack with a dedicated Postgres 18
-- `/healthz`, `/readyz`, `/version`; `gmail-archive version`, `gmail-archive serve`
-- `gmail-archive gen-fixture` — the synthetic mbox generator, with 26
-  individually selectable pathologies and a default mix weighted to measured
-  rates
+```bash
+# Unit tests (no database required)
+uv run pytest
 
-Not built yet: the parser, the schema and migrations, the ingest pipeline,
-search, export, and the web UI.
+# Integration tests (requires GMAIL_ARCHIVE_TEST_DATABASE_URL)
+uv run pytest -m integration
+
+# Slow tests (large fixture generation)
+uv run pytest -m slow
+
+# Full suite
+uv run pytest -m 'not slow'
+```
+
+208 unit tests pass, 41 integration tests skip cleanly without a database URL.
 
 ## License
 
