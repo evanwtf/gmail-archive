@@ -173,6 +173,8 @@ def index(
     label: str | None = "Inbox",
     category: str | None = None,
     on: str | None = None,
+    picker: bool = False,
+    inbox_only: bool = False,
     limit: int = 50,
 ) -> HTMLResponse:
     """The front door: the Gmail inbox.
@@ -185,6 +187,11 @@ def index(
     ``?on=YYYY-MM-DD`` restricts the view to one calendar day. An unparseable
     date is ignored rather than raising — a hand-edited query string should
     land you in the mailbox, not on an error page.
+
+    ``picker=1`` marks a submission from the day picker, where the "Only show
+    Inbox" checkbox decides the scope. The marker is needed because an
+    unchecked checkbox submits nothing at all, so without it "unchecked" and
+    "not from the picker" are the same request.
     """
     after_date_dt: datetime | None = None
     if after_date:
@@ -202,6 +209,15 @@ def index(
     # No cursor reset here on purpose: the picker submits a bare `on`, so a
     # fresh jump already starts at the top of the day, and leaving the cursor
     # alone is what lets a day with more than one page still page.
+
+    if picker:
+        # The checkbox is authoritative for a picker submission: checked means
+        # the Inbox, unchecked means everything. It deliberately overrides the
+        # mailbox you were in — "Only show Inbox" would be a lie if unchecking
+        # it still left you inside Starred.
+        label = "Inbox" if inbox_only else ""
+        if not inbox_only:
+            category = None  # Gmail's tabs only exist inside the inbox
 
     # Primary is everything the other tabs do not claim.
     exclude: tuple[str, ...] = ()

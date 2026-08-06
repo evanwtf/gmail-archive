@@ -13,6 +13,7 @@ import os
 from collections.abc import Callable
 from pathlib import Path
 
+import psycopg
 import pytest
 from fastapi.testclient import TestClient
 
@@ -318,3 +319,50 @@ class TestDayPicker:
     def test_valid_date_is_accepted(self, client: TestClient) -> None:
         response = client.get("/?on=2020-03-04", headers={"Accept": "text/html"})
         assert response.status_code == 503  # no database in the unit suite
+
+
+class TestDayPickerScope:
+    """The "Only show Inbox" checkbox decides the scope of a day jump.
+
+    An unchecked checkbox submits nothing, so the form sends `picker=1` to
+    distinguish "unchecked" from "this request did not come from the picker".
+    These assert the resolution itself, without a database.
+    """
+
+    def _resolve(self, **params: object) -> str | None:
+        """Run the route's scope logic and report the label it settled on."""
+        from unittest.mock import patch
+
+        seen: dict[str, object] = {}
+
+        def capture(conn: object, **kwargs: object) -> list[object]:
+            seen.update(kwargs)
+            raise psycopg.OperationalError("stop here")
+
+        with (
+            patch("gmail_archive.web.app.list_messages_keyset", capture),
+            patch("gmail_archive.web.app._get_conn"),
+        ):
+            TestClient(app).get("/", params=params)
+        return seen.get("label")  # type: ignore[return-value]
+
+    def test_checked_scopes_to_the_inbox(self) -> None:
+        assert self._resolve(picker=1, inbox_only=1, on="2020-03-04") == "Inbox"
+
+    def test_unchecked_searches_all_mail(self) -> None:
+        # No inbox_only at all, which is what a browser sends when unchecked.
+        assert self._resolve(picker=1, on="2020-03-04") is None
+
+    def test_unchecked_overrides_the_mailbox_you_were_in(self) -> None:
+        # "Only show Inbox", unchecked, must not leave you inside Starred.
+        assert self._resolve(picker=1, label="Starred", on="2020-03-04") is None
+
+    def test_checked_overrides_the_mailbox_you_were_in(self) -> None:
+        assert self._resolve(picker=1, inbox_only=1, label="Starred") == "Inbox"
+
+    def test_without_the_picker_marker_the_label_is_untouched(self) -> None:
+        # A plain link is not a picker submission and must keep its label.
+        assert self._resolve(label="Starred") == "Starred"
+
+    def test_default_front_door_is_still_the_inbox(self) -> None:
+        assert self._resolve() == "Inbox"
