@@ -29,7 +29,7 @@ services:
     # exposure. Loopback-only by default — the UI renders twenty years of mail
     # and has no authentication of its own.
     ports:
-      - "127.0.0.1:${WEB_PORT:-8000}:8000"
+      - "0.0.0.0:${WEB_PORT:-8000}:8000"
     environment:
       GMAIL_ARCHIVE_VERSION: ${GMAIL_ARCHIVE_VERSION:-}
       GMAIL_ARCHIVE_COMMIT: ${GMAIL_ARCHIVE_COMMIT:-}
