@@ -45,9 +45,7 @@ def _mbox(tmp_path: Path, lines: list[bytes]) -> Path:
     path = tmp_path / "test.mbox"
     with open(path, "wb") as f:
         for i, body in enumerate(lines):
-            f.write(
-                f"From user{i}@e.com Mon Jan 01 00:00:00 2000\n".encode()
-            )
+            f.write(f"From user{i}@e.com Mon Jan 01 00:00:00 2000\n".encode())
             f.write(body)
     return path
 
@@ -102,7 +100,8 @@ class TestRunBookkeeping:
             _checkpoint(conn, run_id, 999, 50, 10, 2)
             row = conn.execute(
                 "select checkpoint_offset, messages_seen, messages_new, failures "
-                "from ingest_runs where id = %s", (run_id,)
+                "from ingest_runs where id = %s",
+                (run_id,),
             ).fetchone()
             assert row is not None
             assert int(row[0]) == 999
@@ -141,7 +140,6 @@ class TestWriteBatch:
         import hashlib
 
         import psycopg
-
 
         with psycopg.connect(DSN) as conn:  # type: ignore[arg-type]
             # Create a run.
@@ -196,7 +194,8 @@ class TestWriteBatch:
             # Verify message row.
             msg = conn.execute(
                 "select raw_sha256, subject, from_addr from messages "
-                "where raw_sha256 = %s", (sha256,)
+                "where raw_sha256 = %s",
+                (sha256,),
             ).fetchone()
             assert msg is not None
             assert msg[1] == "test"
@@ -248,7 +247,8 @@ class TestWriteBatch:
 
             failed = conn.execute(
                 "select byte_offset, error, truncated from failed_messages "
-                "where run_id = %s", (run_id,)
+                "where run_id = %s",
+                (run_id,),
             ).fetchone()
             assert failed is not None
             assert int(failed[0]) == 100
@@ -268,10 +268,13 @@ class TestIngest:
         """Ingest a small mbox and verify the data made it into Postgres."""
         import psycopg
 
-        mbox = _mbox(tmp_path, [
-            b"Subject: first\n\nbody one\n",
-            b"Subject: second\n\nbody two\n",
-        ])
+        mbox = _mbox(
+            tmp_path,
+            [
+                b"Subject: first\n\nbody one\n",
+                b"Subject: second\n\nbody two\n",
+            ],
+        )
         settings = _settings(tmp_path)
         report = ingest(settings, mbox)
 
@@ -299,9 +302,12 @@ class TestIngest:
         """Re-ingesting the same file must not duplicate rows."""
         import psycopg
 
-        mbox = _mbox(tmp_path, [
-            b"Subject: only\n\nbody\n",
-        ])
+        mbox = _mbox(
+            tmp_path,
+            [
+                b"Subject: only\n\nbody\n",
+            ],
+        )
         settings = _settings(tmp_path)
 
         ingest(settings, mbox)
@@ -334,9 +340,12 @@ class TestIngest:
         """Messages with parser warnings should still be ingested."""
         import psycopg
 
-        mbox = _mbox(tmp_path, [
-            b"Subject: nul\n\nbefore\x00after\n",
-        ])
+        mbox = _mbox(
+            tmp_path,
+            [
+                b"Subject: nul\n\nbefore\x00after\n",
+            ],
+        )
         settings = _settings(tmp_path)
         report = ingest(settings, mbox)
 
@@ -345,9 +354,7 @@ class TestIngest:
         assert report.failures == 0
 
         with psycopg.connect(DSN) as conn:  # type: ignore[arg-type]
-            row = conn.execute(
-                "select parse_warnings from messages"
-            ).fetchone()
+            row = conn.execute("select parse_warnings from messages").fetchone()
             assert row is not None
             assert row[0] is not None
 

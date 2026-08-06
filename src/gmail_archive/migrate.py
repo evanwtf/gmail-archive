@@ -98,9 +98,7 @@ def migrate(dsn: str, directory: Path = MIGRATIONS_DIR) -> list[Migration]:
             return ran
 
         for migration in todo:
-            logger.info(
-                "applying %04d_%s", migration.version, migration.name
-            )
+            logger.info("applying %04d_%s", migration.version, migration.name)
             # One transaction per migration, covering both the DDL and the row
             # recording it.
             with conn.transaction():

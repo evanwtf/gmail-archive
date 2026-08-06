@@ -353,7 +353,8 @@ def list_messages_keyset(
             where += " and " + label_where
             params.append(label)
         raw_rows = conn.execute(
-            base_select + where
+            base_select
+            + where
             + " order by m.internal_date desc nulls last, m.raw_sha256 desc"
             " limit %s",
             (*params, limit),
@@ -365,7 +366,8 @@ def list_messages_keyset(
             where += " and " + label_where
             params.append(label)
         raw_rows = conn.execute(
-            base_select + where
+            base_select
+            + where
             + " order by m.internal_date desc nulls last, m.raw_sha256 desc"
             " limit %s",
             (*params, limit),
@@ -376,7 +378,8 @@ def list_messages_keyset(
         if label:
             where = " where " + label_where
         raw_rows = conn.execute(
-            base_select + where
+            base_select
+            + where
             + " order by m.internal_date desc nulls last, m.raw_sha256 desc"
             " limit %s",
             (*params, limit),

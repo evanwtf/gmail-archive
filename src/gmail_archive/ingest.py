@@ -132,8 +132,10 @@ def _worker_task(
                 for i, a in enumerate(parsed.attachments)
             ],
             "parse_warnings": json.dumps(
-                [{"code": w.code.value, "detail": w.detail}
-                 for w in parsed.parse_warnings]
+                [
+                    {"code": w.code.value, "detail": w.detail}
+                    for w in parsed.parse_warnings
+                ]
             ),
             "blob_written": blob_result.written,
         }
@@ -146,7 +148,7 @@ def _worker_task(
         )
     except Exception as exc:
         tb = traceback.format_exc()
-        prefix = raw[: _FAILED_PREFIX_MAX] if "raw" in dir() else b""
+        prefix = raw[:_FAILED_PREFIX_MAX] if "raw" in dir() else b""
         return WorkerResult(
             offset=offset,
             length=length,
@@ -298,11 +300,7 @@ def _write_batch(
             )
 
         # ── labels ──────────────────────────────────────────────────────
-        label_rows = [
-            (m["raw_sha256"], label)
-            for m in meta
-            for label in m["labels"]
-        ]
+        label_rows = [(m["raw_sha256"], label) for m in meta for label in m["labels"]]
         if label_rows:
             conn.execute(
                 "create temporary table _staging_labels "
@@ -322,8 +320,15 @@ def _write_batch(
 
         # ── attachments ──────────────────────────────────────────────────
         attach_rows = [
-            (m["raw_sha256"], a["part_index"], a["filename"], a["mime_type"],
-             a["size_bytes"], a["content_sha256"], None)
+            (
+                m["raw_sha256"],
+                a["part_index"],
+                a["filename"],
+                a["mime_type"],
+                a["size_bytes"],
+                a["content_sha256"],
+                None,
+            )
             for m in meta
             for a in m["attachments"]
         ]
@@ -380,8 +385,16 @@ def _write_batch(
 
         # ── failed_messages ──────────────────────────────────────────────
         failed_rows = [
-            (run_id, source_path, r.offset, r.length, r.error, r.traceback_str,
-             r.raw_prefix, r.raw_prefix is not None and len(r.raw_prefix) < r.length)
+            (
+                run_id,
+                source_path,
+                r.offset,
+                r.length,
+                r.error,
+                r.traceback_str,
+                r.raw_prefix,
+                r.raw_prefix is not None and len(r.raw_prefix) < r.length,
+            )
             for r in failures
         ]
         if failed_rows:
@@ -497,8 +510,12 @@ def ingest(
 
         if not pending:
             _finalize_run(
-                conn, run_id, "complete",
-                messages_seen=total, messages_new=0, failures=0,
+                conn,
+                run_id,
+                "complete",
+                messages_seen=total,
+                messages_new=0,
+                failures=0,
             )
             return IngestReport(
                 source_path=source_path,
@@ -529,9 +546,7 @@ def ingest(
             _batch_t0 = _t0
             _batch_bytes = 0
             bytes_processed = 0
-            for result in pool.imap_unordered(
-                _worker_task_tuple, tasks, chunksize=1
-            ):
+            for result in pool.imap_unordered(_worker_task_tuple, tasks, chunksize=1):
                 messages_seen += 1
                 bytes_processed += result.length
                 _batch_bytes += result.length
@@ -554,8 +569,12 @@ def ingest(
                     # Checkpoint at the last offset in the batch.
                     last_offset = batch[-1].offset + batch[-1].length
                     _checkpoint(
-                        conn, run_id, last_offset,
-                        messages_seen, messages_new, failures,
+                        conn,
+                        run_id,
+                        last_offset,
+                        messages_seen,
+                        messages_new,
+                        failures,
                     )
                     now = datetime.now(UTC)
                     batch_elapsed = (now - _batch_t0).total_seconds()
@@ -568,8 +587,12 @@ def ingest(
                     logger.info(
                         "checkpoint: %d/%d messages, %d new, %d failures "
                         "(%.0f msg/s, %.1f MiB/s)",
-                        messages_seen, total, messages_new, failures,
-                        batch_rate, batch_mibs,
+                        messages_seen,
+                        total,
+                        messages_new,
+                        failures,
+                        batch_rate,
+                        batch_mibs,
                     )
                     _batch_t0 = now
                     _batch_bytes = 0
@@ -581,21 +604,32 @@ def ingest(
             conn.commit()
             last_offset = batch[-1].offset + batch[-1].length
             _checkpoint(
-                conn, run_id, last_offset,
-                messages_seen, messages_new, failures,
+                conn,
+                run_id,
+                last_offset,
+                messages_seen,
+                messages_new,
+                failures,
             )
 
         # Mark the run as complete.
         _finalize_run(
-            conn, run_id, "complete",
-            messages_seen, messages_new, failures,
+            conn,
+            run_id,
+            "complete",
+            messages_seen,
+            messages_new,
+            failures,
         )
         conn.commit()
 
         elapsed = (datetime.now(UTC) - start).total_seconds()
         logger.info(
             "ingest complete: %d seen, %d new, %d failures in %.1fs",
-            messages_seen, messages_new, failures, elapsed,
+            messages_seen,
+            messages_new,
+            failures,
+            elapsed,
         )
 
         return IngestReport(
@@ -611,8 +645,12 @@ def ingest(
         # Try to mark the run as interrupted so it can be resumed.
         try:
             _finalize_run(
-                conn, run_id, "interrupted",
-                messages_seen, messages_new, failures,
+                conn,
+                run_id,
+                "interrupted",
+                messages_seen,
+                messages_new,
+                failures,
             )
             conn.commit()
         except Exception:

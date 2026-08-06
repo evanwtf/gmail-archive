@@ -117,9 +117,7 @@ class GmailApiSource:
 
             if response.status_code == 429 and attempt < self._max_retries:
                 retry_after = _parse_retry_after(response)
-                logger.warning(
-                    "Rate limited, retrying after %s seconds", retry_after
-                )
+                logger.warning("Rate limited, retrying after %s seconds", retry_after)
                 await _sleep(retry_after)
                 continue
 
@@ -157,8 +155,7 @@ class GmailApiSource:
         data = response.json()
 
         raw_messages = [
-            RawMessage(id=entry["id"], bytes=b"")
-            for entry in data.get("messages", [])
+            RawMessage(id=entry["id"], bytes=b"") for entry in data.get("messages", [])
         ]
 
         next_token = data.get("nextPageToken")

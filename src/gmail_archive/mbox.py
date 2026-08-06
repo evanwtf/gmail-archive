@@ -66,22 +66,22 @@ def scan(path: Path) -> MboxScan:
         open(path, "rb") as fh,
         mmap.mmap(fh.fileno(), 0, access=mmap.ACCESS_READ) as mapped,
     ):
-            offsets: list[tuple[int, int]] = []
+        offsets: list[tuple[int, int]] = []
 
-            # The first message starts at offset 0.
-            starts = [0]
-            pos = 0
-            while True:
-                pos = mapped.find(_SEPARATOR, pos)
-                if pos == -1:
-                    break
-                # +1 to skip the \n; the message starts at the `From_` line.
-                starts.append(pos + 1)
-                pos += 1  # Advance past the \n so we don't find the same one.
+        # The first message starts at offset 0.
+        starts = [0]
+        pos = 0
+        while True:
+            pos = mapped.find(_SEPARATOR, pos)
+            if pos == -1:
+                break
+            # +1 to skip the \n; the message starts at the `From_` line.
+            starts.append(pos + 1)
+            pos += 1  # Advance past the \n so we don't find the same one.
 
-            for i, start in enumerate(starts):
-                end = starts[i + 1] if i + 1 < len(starts) else size
-                offsets.append((start, end - start))
+        for i, start in enumerate(starts):
+            end = starts[i + 1] if i + 1 < len(starts) else size
+            offsets.append((start, end - start))
 
     return MboxScan(
         offsets=offsets,

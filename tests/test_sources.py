@@ -327,9 +327,7 @@ class TestGmailApiTokenRefresh:
             route = respx.get(f"{_GMAIL_BASE}/messages")
             route.side_effect = [
                 httpx.Response(401),
-                httpx.Response(
-                    200, json={"messages": [{"id": "msg1"}]}
-                ),
+                httpx.Response(200, json={"messages": [{"id": "msg1"}]}),
             ]
 
             def _do_refresh() -> None:
@@ -381,9 +379,7 @@ class TestGmailApiHistory:
                                 {"message": {"id": "new1"}},
                                 {"message": {"id": "new2"}},
                             ],
-                            "messagesDeleted": [
-                                {"message": {"id": "old1"}}
-                            ],
+                            "messagesDeleted": [{"message": {"id": "old1"}}],
                             "labelsAdded": [
                                 {
                                     "message": {"id": "lab1"},
@@ -420,13 +416,9 @@ class TestGmailApiHistory:
     async def test_list_history_empty(self) -> None:
         source = _make_source()
         async with respx.mock:
-            respx.get(f"{_GMAIL_BASE}/history").respond(
-                200, json={"history": []}
-            )
+            respx.get(f"{_GMAIL_BASE}/history").respond(200, json={"history": []})
 
-            records, next_token = await source.list_history(
-                start_history_id="9999"
-            )
+            records, next_token = await source.list_history(start_history_id="9999")
             assert len(records) == 0
             assert next_token is None
 

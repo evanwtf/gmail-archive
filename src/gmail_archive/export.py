@@ -72,9 +72,7 @@ def export_mbox(
         params.append(label)
 
     if query is not None:
-        conditions.append(
-            "m.search_tsv @@ websearch_to_tsquery('english', %s)"
-        )
+        conditions.append("m.search_tsv @@ websearch_to_tsquery('english', %s)")
         params.append(query)
 
     where_clause = ""
@@ -155,9 +153,7 @@ def export_eml(
         params.append(label)
 
     if query is not None:
-        conditions.append(
-            "m.search_tsv @@ websearch_to_tsquery('english', %s)"
-        )
+        conditions.append("m.search_tsv @@ websearch_to_tsquery('english', %s)")
         params.append(query)
 
     where_clause = ""

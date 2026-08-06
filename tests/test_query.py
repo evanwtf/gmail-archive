@@ -289,9 +289,7 @@ class TestListMessagesKeyset:
                 "delete from messages where raw_sha256 in (%s, %s)",
                 (sha1, sha2),
             )
-            conn.execute(
-                "delete from blobs where sha256 in (%s, %s)", (sha1, sha2)
-            )
+            conn.execute("delete from blobs where sha256 in (%s, %s)", (sha1, sha2))
 
 
 @pytest.mark.integration

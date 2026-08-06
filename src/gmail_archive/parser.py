@@ -235,9 +235,7 @@ def _date(value: str | None, warnings: list[ParseWarning]) -> datetime | None:
     if parsed.tzinfo is not None:
         offset = parsed.utcoffset()
         if offset is not None and abs(offset) > timedelta(hours=15, minutes=59):
-            warnings.append(
-                ParseWarning(Warn.DATE_TZ_OUT_OF_RANGE, str(offset))
-            )
+            warnings.append(ParseWarning(Warn.DATE_TZ_OUT_OF_RANGE, str(offset)))
             return None
     # A year outside this range is a broken header, not history. Kept rather
     # than discarded — the real export contains one — but flagged.
