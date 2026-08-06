@@ -24,7 +24,9 @@ dev = [
     "mypy>=1.13",
     "pre-commit>=4.0",
     "pytest>=8.3",
+    "pytest-asyncio>=1.4.0",
     "pyyaml>=6.0",
+    "respx>=0.23.1",
     "ruff>=0.8",
     "types-pyyaml>=6.0",
 ]
@@ -51,6 +53,7 @@ files = ["src", "tests", "scripts"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+asyncio_mode = "auto"
 # Integration tests need a Postgres DSN in GMAIL_ARCHIVE_TEST_DATABASE_URL and
 # skip cleanly without one, so the default run stays Docker-free.
 markers = [

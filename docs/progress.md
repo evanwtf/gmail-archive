@@ -3,8 +3,9 @@
 What has actually been built, phase by phase, so this can be picked up cold.
 The intended shape of the whole project is in [plan.md](plan.md).
 
-**Current position: Phase 7 complete. Web UI with Jinja2 templates, HTMX, nh3
-sanitization, and CSP headers. All tests, lint, and type checks passing.**
+**Current position: Phase 8 complete. Message source protocol, MboxSource adapter,
+GmailApiSource with respx mocks, and 30 tests covering pagination, retry, token
+refresh, and history sync. All tests, lint, and type checks passing.**
 
 Live status is the [issue list](https://github.com/evanwtf/gmail-archive/issues),
 one issue per phase, closed at its gate — that is authoritative if this file and
@@ -514,5 +515,62 @@ specified in [plan.md](plan.md#phase-7--web-ui).
 
 ```
 uv run pytest                 # 178 passed, 41 skipped (integration), 1 deselected
+uv run ruff check . && uv run mypy    # clean
+```
+
+## Phase 8 — Gmail API sync (interface + mocks only) — complete
+
+Tracked in [issue #7](https://github.com/evanwtf/gmail-archive/issues/7);
+specified in [plan.md](plan.md#phase-8--gmail-api-sync-interface--mocks-only).
+
+### What was built
+
+- **`src/gmail_archive/sources/protocol.py`** — `MessageSource` protocol with
+  `list_messages()`, `get_message()`, and `list_all()` methods. Data types:
+  `RawMessage`, `MessageBatch`, `HistoryRecord`.
+
+- **`src/gmail_archive/sources/mbox_source.py`** — `MboxSource` adapter wrapping
+  the existing byte-level mbox splitter as a `MessageSource`. Messages identified
+  by byte offset; pagination is offset-based.
+
+- **`src/gmail_archive/sources/gmail_api_source.py`** — `GmailApiSource`
+  implementing the Gmail API over HTTP with:
+  - OAuth2 token management (`TokenStore` with expiry and refresh)
+  - Authenticated requests with `Authorization` header
+  - Retry on 429 (`Retry-After` header) and 5xx errors
+  - Token refresh on 401 (retry once)
+  - `list_messages()` with `nextPageToken` pagination
+  - `get_message()` with `format=raw` base64url decoding
+  - `list_history()` for incremental sync (`historyId`)
+  - `get_profile()` for user profile
+
+- **`tests/test_sources.py`** — 30 tests covering:
+  - MboxSource: listing, pagination, get_message, list_all
+  - GmailApiSource: list_messages, pagination, empty results, query params
+  - GmailApiSource: get_message with raw format, 404 handling
+  - GmailApiSource: 429 retry with Retry-After, 429 exhaustion, 500 retry, 500 exhaustion
+  - GmailApiSource: 401 token refresh, 401 with failed refresh
+  - GmailApiSource: history list, empty history, history pagination
+  - GmailApiSource: profile endpoint
+  - Protocol structural tests
+  - Base64url decode and history entry parsing helpers
+
+### Key design decisions
+
+1. **httpx + respx** — HTTP client is `httpx.AsyncClient`; all network calls are
+   mocked with `respx` in tests. No real network in the test suite.
+2. **TokenStore with no-expiry sentinel** — `_expires_at == 0.0` means "no expiry
+   set" (for test tokens). The `is_expired()` method returns `False` in this case.
+3. **`side_effect` for multi-response routes** — respx routes with the same URL
+   must use `side_effect` (list of responses) rather than multiple `.respond()`
+   calls, which would override each other.
+4. **`list_all()` duplicated per source** — Python protocols don't provide
+   default implementations to structural subtypes, so `list_all()` is implemented
+   in each source class rather than inherited.
+
+### Verified
+
+```
+uv run pytest                 # 208 passed, 41 skipped (integration), 1 deselected
 uv run ruff check . && uv run mypy    # clean
 ```
