@@ -15,7 +15,7 @@
     {% if msg.thread_id %}
     <tr><th>Thread</th><td><a href="/thread/{{ msg.thread_id }}">{{ msg.thread_id }}</a></td></tr>
     {% endif %}
-    <tr><th>Size</th><td>{{ "{:,}"|format(msg.size_bytes) }} bytes</td></tr>
+    <tr><th>Size</th><td>{{ "{:,}".format(msg.size_bytes) }} bytes</td></tr>
   </table>
 </div>
 
