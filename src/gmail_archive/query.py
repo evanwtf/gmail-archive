@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
 
 import psycopg
@@ -434,6 +434,7 @@ def list_messages_keyset(
     limit: int = 50,
     label: str | None = None,
     exclude_labels: tuple[str, ...] = (),
+    on_day: date | None = None,
 ) -> list[MessageRow]:
     """List messages using keyset pagination.
 
@@ -453,9 +454,25 @@ def list_messages_keyset(
     If ``exclude_labels`` is provided, messages carrying any of them are
     omitted — this is how Gmail's Primary tab is expressed: everything that is
     not in one of the other category tabs.
+
+    ``on_day`` restricts the result to a single calendar day, **in UTC**. The
+    archive stores `timestamptz` and the server has no notion of the reader's
+    timezone, so a message sent at 23:30 local time may land on the next day
+    here. For a twenty-year archive that is the honest boundary to pick; the
+    alternative is guessing an offset and being wrong twice a year.
     """
     conditions: list[str] = []
     params: list[object] = []
+
+    if on_day is not None:
+        # Half-open interval against the index, not date(internal_date) = %s,
+        # which would be a function on the column and could not use
+        # messages_keyset_idx.
+        conditions.append(
+            "m.internal_date >= %s::timestamptz"
+            " and m.internal_date < %s::timestamptz + interval '1 day'"
+        )
+        params += [on_day, on_day]
 
     # Keyset predicate. A row comparison against a NULL internal_date is NULL,
     # so dated and undated pages need different predicates; see the note above.
@@ -529,6 +546,27 @@ def get_thread_messages(
         (thread_id,),
     ).fetchall()
     return [_message_row(r) for r in (_row(rr) for rr in raw_rows)]
+
+
+def date_bounds(conn: psycopg.Connection[object]) -> tuple[date | None, date | None]:
+    """Earliest and latest plausible message dates, for the calendar's range.
+
+    Uses the same plausibility window as `stats()`: a `Date` header of 2611
+    is a broken header, not the end of the archive, and it should not stretch
+    a date picker across six centuries. Both bounds come from
+    `messages_keyset_idx`, so this is two index probes.
+    """
+    raw = conn.execute(
+        "select min(internal_date), max(internal_date) from messages"
+        " where internal_date >= '1970-01-01'"
+        " and internal_date <= now() + interval '90 days'"
+    ).fetchone()
+    if raw is None:
+        return None, None
+    row = _row(raw)
+    lo: datetime | None = row[0]
+    hi: datetime | None = row[1]
+    return (lo.date() if lo else None, hi.date() if hi else None)
 
 
 def label_counts(conn: psycopg.Connection[object]) -> dict[str, int]:

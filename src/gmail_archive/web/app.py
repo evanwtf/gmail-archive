@@ -7,7 +7,7 @@ nh3 for HTML sanitization, and CSP headers for defense-in-depth.
 from __future__ import annotations
 
 import re
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -26,6 +26,7 @@ from gmail_archive.query import (
     SEARCH_SORTS,
     SYSTEM_LABELS,
     LabelCount,
+    date_bounds,
     get_message,
     get_message_full,
     get_thread_messages,
@@ -171,6 +172,7 @@ def index(
     after_sha: str | None = None,
     label: str | None = "Inbox",
     category: str | None = None,
+    on: str | None = None,
     limit: int = 50,
 ) -> HTMLResponse:
     """The front door: the Gmail inbox.
@@ -179,6 +181,10 @@ def index(
     mailbox or user label; ``?label=`` with an empty value is All Mail.
     ``?category=`` selects an inbox tab, and the Primary tab is expressed as
     "in the inbox and in none of the other categories".
+
+    ``?on=YYYY-MM-DD`` restricts the view to one calendar day. An unparseable
+    date is ignored rather than raising — a hand-edited query string should
+    land you in the mailbox, not on an error page.
     """
     after_date_dt: datetime | None = None
     if after_date:
@@ -186,6 +192,16 @@ def index(
             after_date_dt = datetime.fromisoformat(after_date)
         except ValueError:
             after_date_dt = None
+
+    on_day: date | None = None
+    if on:
+        try:
+            on_day = date.fromisoformat(on)
+        except ValueError:
+            on_day = None
+    # No cursor reset here on purpose: the picker submits a bare `on`, so a
+    # fresh jump already starts at the top of the day, and leaving the cursor
+    # alone is what lets a day with more than one page still page.
 
     # Primary is everything the other tabs do not claim.
     exclude: tuple[str, ...] = ()
@@ -203,8 +219,10 @@ def index(
                 limit=limit + 1,
                 label=label or None,
                 exclude_labels=exclude,
+                on_day=on_day,
             )
             context = _chrome(conn)
+            earliest, latest = date_bounds(conn)
     except psycopg.Error:
         return templates.TemplateResponse(
             request,
@@ -232,7 +250,14 @@ def index(
             "label": label,
             "category": category,
             "limit": limit,
-            "title": label or "All Mail",
+            "on_day": on_day,
+            "prev_day": (on_day - timedelta(days=1)) if on_day else None,
+            "next_day": (on_day + timedelta(days=1)) if on_day else None,
+            "earliest": earliest,
+            "latest": latest,
+            "title": (
+                on_day.strftime("%A, %-d %B %Y") if on_day else (label or "All Mail")
+            ),
         }
     )
     return templates.TemplateResponse(request, "mailbox.html", context)

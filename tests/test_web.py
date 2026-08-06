@@ -303,3 +303,18 @@ class TestRawDownload:
         response = client.get("/raw/" + "0" * 64)
         # Even for 404, the middleware should set nosniff.
         assert "X-Content-Type-Options" in response.headers
+
+
+class TestDayPicker:
+    """`?on=YYYY-MM-DD` restricts the mailbox to one calendar day."""
+
+    def test_bad_date_is_ignored_not_an_error(self, client: TestClient) -> None:
+        # 503 means it got past date parsing and into the database call; a 500
+        # would mean a hand-edited query string can crash the mailbox.
+        for bad in ("not-a-date", "2026-13-45", "", "2026-02-30", "0000-00-00"):
+            response = client.get(f"/?on={bad}", headers={"Accept": "text/html"})
+            assert response.status_code == 503, bad
+
+    def test_valid_date_is_accepted(self, client: TestClient) -> None:
+        response = client.get("/?on=2020-03-04", headers={"Accept": "text/html"})
+        assert response.status_code == 503  # no database in the unit suite

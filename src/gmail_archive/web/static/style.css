@@ -194,6 +194,33 @@ a { color: inherit; text-decoration: none; }
 .listbar-title { font-size: 15px; font-weight: 700; }
 .listbar-count { font-size: 12px; color: var(--text-dim); }
 
+/* ── Day picker ───────────────────────────────────────────────── */
+.daypick { margin-left: auto; display: flex; align-items: center; gap: 6px; }
+
+.daypick-input {
+  font: inherit;
+  font-size: 12px;
+  padding: 5px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+}
+.daypick-input:focus { outline: none; border-color: #1a73e8; }
+
+.daypick-go, .daypick-step, .daypick-clear {
+  font-size: 12px;
+  padding: 5px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text-dim);
+  cursor: pointer;
+  line-height: 1.2;
+}
+.daypick-go:hover, .daypick-step:hover, .daypick-clear:hover { background: var(--hover); }
+.daypick-step { padding: 5px 9px; font-size: 14px; }
+
 .sortbar { margin-left: auto; font-size: 12px; display: flex; gap: 10px; }
 .sortbar a { color: #1a73e8; }
 .sort-active { color: var(--text); }

@@ -15,9 +15,32 @@
 
 <div class="listbar">
   <span class="listbar-title">{{ title }}</span>
-  {% if mailbox_counts.get(label) %}
+  {% if on_day %}
+  <span class="listbar-count">{{ messages|length }} message{{ 's' if messages|length != 1 else '' }}{% if label %} in {{ label }}{% endif %}</span>
+  {% elif mailbox_counts.get(label) %}
   <span class="listbar-count">{{ "{:,}".format(mailbox_counts[label]) }} messages</span>
   {% endif %}
+
+  {# Native date input: a real calendar picker with no JavaScript and nothing
+     to load. min/max come from the archive's own plausible date range. #}
+  <form class="daypick" method="get" action="/">
+    {% if label %}<input type="hidden" name="label" value="{{ label }}">{% endif %}
+    {% if category %}<input type="hidden" name="category" value="{{ category }}">{% endif %}
+    {% if on_day %}
+    <a class="daypick-step" href="/?{% if label %}label={{ label|urlencode }}&amp;{% endif %}on={{ prev_day }}"
+       title="{{ prev_day }}">&lsaquo;</a>
+    {% endif %}
+    <input type="date" name="on" class="daypick-input" value="{{ on_day or '' }}"
+           {% if earliest %}min="{{ earliest }}"{% endif %}
+           {% if latest %}max="{{ latest }}"{% endif %}
+           aria-label="Jump to a day">
+    <button type="submit" class="daypick-go">Go</button>
+    {% if on_day %}
+    <a class="daypick-step" href="/?{% if label %}label={{ label|urlencode }}&amp;{% endif %}on={{ next_day }}"
+       title="{{ next_day }}">&rsaquo;</a>
+    <a class="daypick-clear" href="/?label={{ (label or '')|urlencode }}">Clear</a>
+    {% endif %}
+  </form>
 </div>
 
 {% if messages %}
@@ -29,9 +52,17 @@
 
 {% if next_cursor %}
 <div class="pager">
-  <a class="pager-next" href="/?label={{ (label or '')|urlencode }}{% if category %}&amp;category={{ category|urlencode }}{% endif %}&amp;limit={{ limit }}&amp;after_date={{ next_cursor.after_date|urlencode }}&amp;after_sha={{ next_cursor.after_sha }}">Older &rsaquo;</a>
+  <a class="pager-next" href="/?label={{ (label or '')|urlencode }}{% if category %}&amp;category={{ category|urlencode }}{% endif %}{% if on_day %}&amp;on={{ on_day }}{% endif %}&amp;limit={{ limit }}&amp;after_date={{ next_cursor.after_date|urlencode }}&amp;after_sha={{ next_cursor.after_sha }}">Older &rsaquo;</a>
 </div>
 {% endif %}
+
+{% elif on_day %}
+<p class="empty">
+  No mail on {{ title }}{% if label %} in {{ label }}{% endif %}.
+  {% if label %}<a href="/?label=&amp;on={{ on_day }}">Try All Mail for this day</a>, or {% endif %}
+  step to <a href="/?{% if label %}label={{ label|urlencode }}&amp;{% endif %}on={{ prev_day }}">{{ prev_day }}</a>
+  or <a href="/?{% if label %}label={{ label|urlencode }}&amp;{% endif %}on={{ next_day }}">{{ next_day }}</a>.
+</p>
 
 {% else %}
 <p class="empty">
