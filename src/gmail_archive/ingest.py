@@ -157,6 +157,13 @@ def _worker_task(
         )
 
 
+def _worker_task_tuple(
+    args: tuple[int, int, str, str],
+) -> WorkerResult:
+    """Wrapper for imap_unordered: unpacks a tuple and delegates."""
+    return _worker_task(*args)
+
+
 def _ensure_run(
     conn: psycopg.Connection[object],
     source_path: str,
@@ -515,11 +522,12 @@ def ingest(
                 (offset, length, source_path, str(settings.blob_dir))
                 for offset, length in pending
             ]
-            results_iter = pool.starmap_async(
-                _worker_task, tasks, chunksize=1
-            )
-
-            for result in results_iter.get():
+            # imap_unordered yields results as each worker finishes, so the
+            # main loop can write batches and log progress immediately rather
+            # than waiting for all workers to complete.
+            for result in pool.imap_unordered(
+                _worker_task_tuple, tasks, chunksize=1
+            ):
                 messages_seen += 1
                 batch.append(result)
 
