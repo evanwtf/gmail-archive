@@ -7,13 +7,11 @@ These tests verify the query functions work correctly against a real database.
 from __future__ import annotations
 
 import os
-from pathlib import Path
 
 import pytest
 
 from gmail_archive.query import (
     ArchiveStats,
-    SearchResult,
     get_message,
     list_messages,
     search,
@@ -141,7 +139,9 @@ class TestListMessages:
             # Newest first.
             assert result[0].subject == "newer"
 
-            conn.execute("delete from messages where raw_sha256 in (%s, %s)", (sha1, sha2))
+            conn.execute(
+                "delete from messages where raw_sha256 in (%s, %s)", (sha1, sha2)
+            )
             conn.execute("delete from blobs where sha256 in (%s, %s)", (sha1, sha2))
 
 

@@ -62,8 +62,10 @@ def scan(path: Path) -> MboxScan:
     if size == 0:
         return MboxScan(offsets=[], total_bytes=0, message_count=0)
 
-    with open(path, "rb") as fh:
-        with mmap.mmap(fh.fileno(), 0, access=mmap.ACCESS_READ) as mapped:
+    with (
+        open(path, "rb") as fh,
+        mmap.mmap(fh.fileno(), 0, access=mmap.ACCESS_READ) as mapped,
+    ):
             offsets: list[tuple[int, int]] = []
 
             # The first message starts at offset 0.
@@ -78,10 +80,7 @@ def scan(path: Path) -> MboxScan:
                 pos += 1  # Advance past the \n so we don't find the same one.
 
             for i, start in enumerate(starts):
-                if i + 1 < len(starts):
-                    end = starts[i + 1]
-                else:
-                    end = size
+                end = starts[i + 1] if i + 1 < len(starts) else size
                 offsets.append((start, end - start))
 
     return MboxScan(

@@ -15,7 +15,6 @@ import pytest
 
 from gmail_archive.config import Settings
 from gmail_archive.ingest import (
-    IngestReport,
     WorkerResult,
     _checkpoint,
     _ensure_run,
@@ -23,7 +22,6 @@ from gmail_archive.ingest import (
     _write_batch,
     ingest,
 )
-from gmail_archive.mbox import scan
 
 DSN = os.environ.get("GMAIL_ARCHIVE_TEST_DATABASE_URL")
 
@@ -143,7 +141,6 @@ class TestWriteBatch:
 
         import psycopg
 
-        from gmail_archive.storage import BlobStore
 
         with psycopg.connect(DSN) as conn:
             # Create a run.
@@ -219,7 +216,9 @@ class TestWriteBatch:
             assert int(sighting[0]) == 0
 
             # Clean up
-            conn.execute("delete from message_sightings where raw_sha256 = %s", (sha256,))
+            conn.execute(
+                "delete from message_sightings where raw_sha256 = %s", (sha256,)
+            )
             conn.execute("delete from labels where raw_sha256 = %s", (sha256,))
             conn.execute("delete from messages where raw_sha256 = %s", (sha256,))
             conn.execute("delete from blobs where sha256 = %s", (sha256,))
@@ -304,7 +303,7 @@ class TestIngest:
         ])
         settings = _settings(tmp_path)
 
-        first = ingest(settings, mbox)
+        ingest(settings, mbox)
         second = ingest(settings, mbox)
 
         assert second.messages_new == 0  # No new messages on re-ingest

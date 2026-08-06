@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from gmail_archive.mbox import MboxScan, read_message, scan, strip_envelope
+from gmail_archive.mbox import read_message, scan, strip_envelope
 
 
 def _mbox(raw: bytes) -> tuple[Path, int]:
@@ -75,7 +75,10 @@ class TestScan:
 
     def test_from_header_is_not_a_separator(self) -> None:
         """A `From:` header contains a colon, not a space after 'From'."""
-        raw = b"From a@e.com Mon Jan 01 00:00:00 2000\nFrom: sender@e.com\nSubject: s\n\nbody\n"
+        raw = (
+            b"From a@e.com Mon Jan 01 00:00:00 2000\n"
+            b"From: sender@e.com\nSubject: s\n\nbody\n"
+        )
         path, _ = _mbox(raw)
         result = scan(path)
         assert result.message_count == 1
@@ -129,13 +132,15 @@ class TestScan:
     def test_large_file_does_not_load_into_memory(self) -> None:
         """The scan must not read the full file content. We verify by checking
         that the scan completes without OOM on a sparse-ish file."""
-        import os
 
         path, _ = _mbox(b"")
         # Write a file with many messages without holding all the content.
         with open(path, "wb") as f:
             for i in range(1000):
-                line = f"From user{i}@e.com Mon Jan 01 00:00:00 2000\nSubject: {i}\n\nbody{i}\n".encode()
+                line = (
+                    f"From user{i}@e.com Mon Jan 01 00:00:00 2000\n"
+                    f"Subject: {i}\n\nbody{i}\n"
+                ).encode()
                 f.write(line)
         result = scan(path)
         assert result.message_count == 1000

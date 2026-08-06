@@ -77,7 +77,7 @@ def discover(directory: Path = MIGRATIONS_DIR) -> list[Migration]:
 def applied_versions(conn: psycopg.Connection[object]) -> set[int]:
     conn.execute(_BOOTSTRAP)
     rows = conn.execute("select version from schema_migrations").fetchall()
-    return {int(row[0]) for row in rows}
+    return {int(row[0]) for row in rows}  # type: ignore[index]
 
 
 def pending(
@@ -104,7 +104,7 @@ def migrate(dsn: str, directory: Path = MIGRATIONS_DIR) -> list[Migration]:
             # One transaction per migration, covering both the DDL and the row
             # recording it.
             with conn.transaction():
-                conn.execute(migration.sql)  # type: ignore[arg-type]
+                conn.execute(migration.sql)
                 conn.execute(
                     "insert into schema_migrations (version, name) values (%s, %s)",
                     (migration.version, migration.name),
