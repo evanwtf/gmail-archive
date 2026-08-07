@@ -92,6 +92,19 @@ def migrate(dsn: str, directory: Path = MIGRATIONS_DIR) -> list[Migration]:
     ran: list[Migration] = []
     with psycopg.connect(dsn) as conn:
         conn.autocommit = True
+        # Log what was found and where. In the container the migrations are
+        # baked into the image, not read from the working tree, so adding a
+        # file and running `docker compose run --rm web migrate` silently does
+        # nothing until the image is rebuilt — and reports {"applied": 0},
+        # which reads like success. Naming the directory and the filenames
+        # turns that into something visible.
+        discovered = discover(directory)
+        logger.info(
+            "migrations directory %s contains %d file(s): %s",
+            directory,
+            len(discovered),
+            ", ".join(f"{m.version:04d}_{m.name}" for m in discovered) or "none",
+        )
         todo = pending(conn, directory)
         if not todo:
             logger.info("schema is up to date")

@@ -648,6 +648,22 @@ def ingest(
                 failures,
             )
 
+        # Refresh planner statistics before declaring victory.
+        #
+        # A bulk ingest leaves the planner working from statistics gathered
+        # when the tables were small, and it then picks bad plans for search —
+        # measured at multi-second queries against sub-100ms after an ANALYZE.
+        # Autovacuum gets there eventually, but "eventually" is well after
+        # someone has formed an opinion about how slow the archive is.
+        #
+        # Seconds against an ingest measured in minutes to hours, so it is not
+        # worth making optional. VACUUM proper stays manual: it is far more
+        # invasive, and the runbook covers it.
+        if messages_new:
+            logger.info("refreshing planner statistics")
+            conn.execute("analyze messages, blobs, labels, attachments")
+            conn.commit()
+
         # Mark the run as complete.
         _finalize_run(
             conn,

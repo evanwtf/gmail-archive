@@ -438,39 +438,51 @@ def yearly_activity(conn: psycopg.Connection[object]) -> list[YearActivity]:
     Bounded to plausible dates for the same reason `stats()` is: one message
     claiming 2611 should not add a column six centuries wide.
     """
+    # Two narrow queries rather than one wide one.
+    #
+    # The first version grouped `messages left join labels` — a million label
+    # rows collapsed to 269k messages before anything was counted, ~1.6s. But
+    # only the `Sent` label matters here, and there are ~12k of those: a
+    # semi-join against `labels_label_idx` reads a fraction of the table.
+    # Recipient counting needs `unnest`, which multiplies rows, so it runs
+    # separately over sent mail only and is merged in Python.
     rows = conn.execute(
         """
-        with flagged as (
-            select
-                extract(year from m.internal_date)::int as yr,
-                m.raw_sha256,
-                m.to_addrs,
-                bool_or(l.label = 'Sent') as is_sent,
-                lower(trim(m.from_addr)) as address
-            from messages m
-            left join labels l on l.raw_sha256 = m.raw_sha256
-            where m.internal_date >= '1990-01-01'
-              and m.internal_date <= now()
-            group by 1, m.raw_sha256, m.to_addrs, m.from_addr
-        )
         select
-            f.yr,
-            count(*) filter (where f.is_sent) as sent,
-            count(*) filter (where not f.is_sent) as received,
+            extract(year from m.internal_date)::int as yr,
+            count(*) filter (where s.raw_sha256 is not null) as sent,
+            count(*) filter (where s.raw_sha256 is null) as received,
             count(*) filter (
-                where not f.is_sent and coalesce(p.kind, 'human') = 'human'
+                where s.raw_sha256 is null
+                  and coalesce(p.kind, 'human') = 'human'
             ) as human_received,
             count(*) filter (
-                where not f.is_sent and p.kind = 'bulk'
-            ) as bulk_received,
-            count(distinct case when f.is_sent then r end) as people_mailed
-        from flagged f
-        left join sender_profiles p on p.address = f.address
-        left join lateral unnest(f.to_addrs) as r on f.is_sent
-        group by f.yr
-        order by f.yr
+                where s.raw_sha256 is null and p.kind = 'bulk'
+            ) as bulk_received
+        from messages m
+        left join (
+            select distinct raw_sha256 from labels where label = 'Sent'
+        ) s on s.raw_sha256 = m.raw_sha256
+        left join sender_profiles p on p.address = lower(trim(m.from_addr))
+        where m.internal_date >= '1990-01-01' and m.internal_date <= now()
+        group by 1
+        order by 1
         """
     ).fetchall()
+
+    people = conn.execute(
+        """
+        select extract(year from m.internal_date)::int as yr,
+               count(distinct lower(trim(r))) as people
+        from messages m
+        join labels l on l.raw_sha256 = m.raw_sha256 and l.label = 'Sent',
+             lateral unnest(m.to_addrs) as r
+        where m.internal_date >= '1990-01-01' and m.internal_date <= now()
+        group by 1
+        """
+    ).fetchall()
+    people_by_year = {int(r[0]): int(r[1]) for r in (_row(rr) for rr in people)}
+
     return [
         YearActivity(
             year=int(r[0]),
@@ -478,7 +490,7 @@ def yearly_activity(conn: psycopg.Connection[object]) -> list[YearActivity]:
             received=int(r[2]),
             human_received=int(r[3]),
             bulk_received=int(r[4]),
-            people_mailed=int(r[5]),
+            people_mailed=people_by_year.get(int(r[0]), 0),
         )
         for r in (_row(rr) for rr in rows)
     ]

@@ -45,6 +45,10 @@ services:
       GMAIL_ARCHIVE_DATABASE_URL: postgresql://gmail_archive:${POSTGRES_PASSWORD:-}@postgres:5432/gmail_archive
     volumes:
       - ${GMAIL_ARCHIVE_BLOB_HOST_PATH:-./data/blobs}:/blobs
+      # Read-only, and over the copy baked into the image: otherwise `migrate`
+      # applies whatever migrations existed when the image was last built, and
+      # a newly added file is silently ignored.
+      - ./migrations:/app/migrations:ro
     stop_grace_period: 30s
     restart: unless-stopped
     depends_on:
