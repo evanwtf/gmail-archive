@@ -363,3 +363,94 @@ class TestIngest:
             conn.execute("delete from messages")
             conn.execute("delete from blobs")
             conn.execute("delete from ingest_runs")
+
+
+class TestMboxUnquoting:
+    """Ingest must store the unquoted RFC822 message (ADR-002).
+
+    It previously told `parse()` the bytes were already unquoted when nothing
+    had unquoted them, so `raw_sha256` hashed the mbox-quoted form and every
+    blob carried `>From ` lines the message never had.
+    """
+
+    MBOX = (
+        b"From MAILER-DAEMON Thu Jan  1 00:00:00 1970\n"
+        b"From: a@example.com\n"
+        b"Subject: quoting\n"
+        b"\n"
+        b">From the desk of someone\n"
+        b"normal line\n"
+    )
+
+    def _ingest_one(self, tmp_path: object) -> tuple[bytes, str]:
+        """Run a worker task over a one-message mbox; return (blob, sha)."""
+        from pathlib import Path
+
+        from gmail_archive.ingest import _worker_task
+        from gmail_archive.mbox import scan
+
+        base = Path(str(tmp_path))
+        mbox = base / "one.mbox"
+        mbox.write_bytes(self.MBOX)
+        blobs = base / "blobs"
+        blobs.mkdir()
+
+        offset, length = scan(mbox).offsets[0]
+        result = _worker_task(offset, length, str(mbox), str(blobs))
+        assert result.success and result.metadata is not None
+        sha = str(result.metadata["raw_sha256"])
+        return (blobs / sha[:2] / sha).read_bytes(), sha
+
+    def test_the_stored_blob_is_unquoted(self, tmp_path: object) -> None:
+        blob, _ = self._ingest_one(tmp_path)
+        assert b"\nFrom the desk of someone\n" in blob
+        assert b">From the desk" not in blob
+
+    def test_the_hash_is_of_the_unquoted_bytes(self, tmp_path: object) -> None:
+        # The blob's name must be the hash of its own contents — the property
+        # the whole content-addressed store rests on.
+        import hashlib
+
+        blob, sha = self._ingest_one(tmp_path)
+        assert hashlib.sha256(blob).hexdigest() == sha
+
+    def test_body_text_is_unquoted_too(self, tmp_path: object) -> None:
+        from pathlib import Path
+
+        from gmail_archive.ingest import _worker_task
+        from gmail_archive.mbox import scan
+
+        base = Path(str(tmp_path))
+        mbox = base / "one.mbox"
+        mbox.write_bytes(self.MBOX)
+        blobs = base / "blobs"
+        blobs.mkdir()
+        offset, length = scan(mbox).offsets[0]
+        result = _worker_task(offset, length, str(mbox), str(blobs))
+        assert result.metadata is not None
+        assert "From the desk" in result.metadata["body_text"]
+        assert ">From the desk" not in result.metadata["body_text"]
+
+    def test_ambiguous_quoting_is_still_recorded(self, tmp_path: object) -> None:
+        # ADR-002 promises a warning on `>>From ` lines. It could never fire
+        # before, because the code path that emits it never ran.
+        import json
+        from pathlib import Path
+
+        from gmail_archive.ingest import _worker_task
+        from gmail_archive.mbox import scan
+
+        base = Path(str(tmp_path))
+        mbox = base / "amb.mbox"
+        mbox.write_bytes(
+            b"From MAILER-DAEMON Thu Jan  1 00:00:00 1970\n"
+            b"From: a@example.com\n\n"
+            b">>From a double quote\n"
+        )
+        blobs = base / "blobs"
+        blobs.mkdir()
+        offset, length = scan(mbox).offsets[0]
+        result = _worker_task(offset, length, str(mbox), str(blobs))
+        assert result.metadata is not None
+        codes = [w["code"] for w in json.loads(result.metadata["parse_warnings"])]
+        assert "unquote-ambiguous" in codes

@@ -25,6 +25,12 @@
     <input type="search" name="q" value="{{ query|default('', true) }}"
            placeholder="Search mail" class="topsearch-input" autocomplete="off">
   </form>
+  <nav class="topnav">
+    <a class="topnav-item{% if request.url.path == '/people' %} topnav-active{% endif %}" href="/people">People</a>
+    <a class="topnav-item{% if request.url.path == '/trends' %} topnav-active{% endif %}" href="/trends">Trends</a>
+    <a class="topnav-item{% if request.url.path == '/stats' %} topnav-active{% endif %}" href="/stats">Stats</a>
+  </nav>
+
   <div class="topbar-right">
     <span class="readonly-chip" title="This archive is immutable. Nothing here can send, delete, or modify mail.">read-only</span>
     {# <details> rather than a scripted modal: it needs no JavaScript, works
@@ -64,19 +70,7 @@
     <a class="rail-item rail-more" href="/labels">All labels &rsaquo;</a>
     {% endif %}
 
-    <div class="rail-section">Archive</div>
-    <a class="rail-item" href="/people">
-      <span class="rail-icon rail-icon-people" aria-hidden="true"></span>
-      <span class="rail-label">People</span>
-    </a>
-    <a class="rail-item" href="/trends">
-      <span class="rail-icon rail-icon-trends" aria-hidden="true"></span>
-      <span class="rail-label">Trends</span>
-    </a>
-    <a class="rail-item" href="/stats">
-      <span class="rail-icon rail-icon-stats" aria-hidden="true"></span>
-      <span class="rail-label">Statistics</span>
-    </a>
+
   </nav>
 
   <main class="content">

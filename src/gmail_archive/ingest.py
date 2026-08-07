@@ -41,7 +41,7 @@ import psycopg
 
 from gmail_archive.config import Settings
 from gmail_archive.mbox import read_message, scan, strip_envelope
-from gmail_archive.parser import parse
+from gmail_archive.parser import ParseWarning, Warn, parse, unquote_mbox
 from gmail_archive.storage import BlobStore
 
 logger = logging.getLogger(__name__)
@@ -96,8 +96,21 @@ def _worker_task(
 
     try:
         raw = read_message(mbox, offset, length)
-        body_bytes = strip_envelope(raw)
+        envelope_stripped = strip_envelope(raw)
+
+        # Unquote here, explicitly, rather than telling parse() it was already
+        # done. This previously passed `already_unquoted=True` for bytes that
+        # nothing had unquoted, so `raw_sha256` hashed the mbox-quoted form and
+        # every blob stored `>From ` lines that were never in the message —
+        # contrary to ADR-002 and to parse()'s own docstring.
+        #
+        # Doing it here rather than inside parse() keeps the unquoted bytes,
+        # which is what has to reach the blob store: the hash and the stored
+        # bytes must be the same thing.
+        body_bytes, ambiguous = unquote_mbox(envelope_stripped)
         parsed = parse(body_bytes, already_unquoted=True)
+        if ambiguous:
+            parsed.parse_warnings.append(ParseWarning(Warn.UNQUOTE_AMBIGUOUS))
 
         # Write the blob (idempotent — no-op if already present).
         blob_result = store.put(body_bytes, sha256=parsed.raw_sha256)
@@ -546,6 +559,21 @@ def ingest(
             _batch_t0 = _t0
             _batch_bytes = 0
             bytes_processed = 0
+
+            # Resume safety. `imap_unordered` yields results as workers
+            # finish, in no particular order, so the last result in a batch is
+            # not the furthest through the file. Checkpointing its offset
+            # declares everything before it done — and anything still in
+            # flight below that point is skipped for good on resume, silently,
+            # because `pending` is filtered on `offset >= checkpoint`.
+            #
+            # So track a low-water mark instead: the end of the longest
+            # contiguous run of *completed* messages from the start of the
+            # pending list. Everything below it is genuinely finished.
+            pending_offsets = [offset for offset, _ in pending]
+            completed_ends: dict[int, int] = {}
+            contiguous = 0
+            safe_offset = checkpoint
             for result in pool.imap_unordered(_worker_task_tuple, tasks, chunksize=1):
                 messages_seen += 1
                 bytes_processed += result.length
@@ -562,16 +590,25 @@ def ingest(
                 if not result.success:
                     failures += 1
 
+                # Advance the low-water mark over whatever is now contiguous.
+                completed_ends[result.offset] = result.offset + result.length
+                while (
+                    contiguous < len(pending_offsets)
+                    and pending_offsets[contiguous] in completed_ends
+                ):
+                    safe_offset = completed_ends[pending_offsets[contiguous]]
+                    contiguous += 1
+
                 # Flush batch at batch_size boundary or at end.
                 if len(batch) >= n_batch:
                     _write_batch(conn, run_id, source_path, batch)
                     conn.commit()
-                    # Checkpoint at the last offset in the batch.
-                    last_offset = batch[-1].offset + batch[-1].length
+                    # The batch is durable, so every result seen so far is
+                    # durable, and the low-water mark is safe to record.
                     _checkpoint(
                         conn,
                         run_id,
-                        last_offset,
+                        safe_offset,
                         messages_seen,
                         messages_new,
                         failures,
@@ -602,11 +639,10 @@ def ingest(
         if batch:
             _write_batch(conn, run_id, source_path, batch)
             conn.commit()
-            last_offset = batch[-1].offset + batch[-1].length
             _checkpoint(
                 conn,
                 run_id,
-                last_offset,
+                safe_offset,
                 messages_seen,
                 messages_new,
                 failures,

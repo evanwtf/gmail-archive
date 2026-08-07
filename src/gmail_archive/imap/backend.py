@@ -188,7 +188,23 @@ class Login(LoginInterface):
 
     @property
     def user_identity(self) -> Identity:
+        """The configured user's identity.
+
+        A fresh object each call, deliberately — but the metadata it reads and
+        writes lives on this `Login`, not on the Identity. It used to live on
+        the Identity, which meant `_add_user()` stored the hashed password on
+        an object discarded on the next line and every login failed, including
+        one with the correct password.
+        """
         return Identity(self.config.imap_user, self, None, frozenset())
+
+    def get_user_metadata(self, name: str) -> UserMetadata | None:
+        if self._user_metadata is not None and name == self.config.imap_user:
+            return self._user_metadata
+        return None
+
+    def set_user_metadata(self, user: UserMetadata) -> None:
+        self._user_metadata = user
 
     async def authenticate(self, credentials: ServerCredentials) -> Identity:
         authcid = credentials.authcid
@@ -225,7 +241,6 @@ class Identity(IdentityInterface):
         self._name = name
         self._roles = roles
         self._token_id = token_id
-        self._user_metadata: UserMetadata | None = None
 
     @property
     def name(self) -> str:
@@ -244,12 +259,14 @@ class Identity(IdentityInterface):
         yield Session(self._name, self.config, mailbox_set)
 
     async def get(self) -> UserMetadata:
-        if self._user_metadata is None:
+        # Read through to the Login, which outlives this object.
+        user = self.login.get_user_metadata(self._name)
+        if user is None:
             raise UserNotFound(self._name)
-        return self._user_metadata
+        return user
 
     async def set(self, user: UserMetadata) -> int:
-        self._user_metadata = user
+        self.login.set_user_metadata(user)
         return UserMetadata.new_entity_tag()
 
     async def delete(self) -> None:
