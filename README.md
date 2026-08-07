@@ -1,5 +1,13 @@
 # gmail-archive
 
+[![CI](https://github.com/evanwtf/gmail-archive/actions/workflows/ci.yml/badge.svg)](https://github.com/evanwtf/gmail-archive/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/tag/evanwtf/gmail-archive?label=release&sort=semver)](https://github.com/evanwtf/gmail-archive/releases)
+[![Python 3.13](https://img.shields.io/badge/python-3.13-blue)](https://www.python.org/downloads/)
+[![Postgres 18](https://img.shields.io/badge/postgres-18-336791)](https://www.postgresql.org/)
+[![Checked with mypy](https://img.shields.io/badge/mypy-strict-2a6db2)](https://mypy-lang.org/)
+[![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+
 Ingest a Google Takeout Gmail mbox export into Postgres for permanent local
 archival, search, and export. Three surfaces over one archive: a
 `gmail-archive` CLI, a local FastAPI web UI, and a read-only IMAP server, all
