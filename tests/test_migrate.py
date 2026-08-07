@@ -119,33 +119,42 @@ class TestApply:
                 assert pending(conn) == []
 
     def test_schema_supports_the_keyset_ordering(self) -> None:
-
         from gmail_archive.migrate import migrate
 
         assert DSN is not None
         migrate(DSN)
+
+        # A sequential scan is the right plan on a tiny table however good the
+        # index is, so the index can only be shown to work with enough rows to
+        # make it the cheaper option. The rows are dated in the distant past
+        # and deleted afterwards: this is a shared database, and 2000 rows
+        # left behind changed what "newest first" meant for other tests.
+        seed = (
+            "select md5(g::text) || md5((g + 1)::text) from generate_series(1, 2000) g"
+        )
         with psycopg.connect(DSN) as conn:
-            # The planner picks a sequential scan on a tiny table however good
-            # the index is, so seed enough rows for the index to be the
-            # cheaper option. Without this the test only passed on a machine
-            # whose database already had an archive in it.
             conn.execute(
                 "insert into blobs (sha256, size_bytes, kind)"
-                " select md5(g::text) || md5((g + 1)::text), 1, 'message'"
-                " from generate_series(1, 2000) g on conflict do nothing"
+                f" select s, 1, 'message' from ({seed}) as t(s)"
+                " on conflict do nothing"
             )
             conn.execute(
                 "insert into messages (raw_sha256, size_bytes, internal_date)"
-                " select md5(g::text) || md5((g + 1)::text), 1,"
-                " now() - (g || ' hours')::interval"
-                " from generate_series(1, 2000) g on conflict do nothing"
+                f" select s, 1, timestamptz '1995-01-01' from ({seed}) as t(s)"
+                " on conflict do nothing"
             )
             conn.execute("analyze messages")
-            # The query planner must be able to use the index for the exact
-            # ordering query.py will emit; a mismatch here is a sequential scan
-            # over the whole archive.
-            plan = conn.execute(
-                "explain select raw_sha256 from messages "
-                "order by internal_date desc nulls last, raw_sha256 desc limit 50"
-            ).fetchall()
-            assert any("messages_keyset_idx" in str(row) for row in plan), plan
+            try:
+                # The planner must be able to use the index for the exact
+                # ordering query.py emits; a mismatch is a sequential scan
+                # over the whole archive.
+                plan = conn.execute(
+                    "explain select raw_sha256 from messages"
+                    " order by internal_date desc nulls last, raw_sha256 desc"
+                    " limit 50"
+                ).fetchall()
+                assert any("messages_keyset_idx" in str(row) for row in plan), plan
+            finally:
+                conn.execute(f"delete from messages where raw_sha256 in ({seed})")
+                conn.execute(f"delete from blobs where sha256 in ({seed})")
+                conn.commit()
