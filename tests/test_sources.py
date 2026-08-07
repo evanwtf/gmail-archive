@@ -50,8 +50,8 @@ class TestMboxSource:
     """Tests for the mbox-backed message source."""
 
     @pytest.fixture
-    def mbox_path(self) -> Path:
-        return FIXTURES / "simple.mbox"
+    def mbox_path(self, simple_mbox: Path) -> Path:
+        return simple_mbox
 
     @pytest.fixture
     def source(self, mbox_path: Path) -> MboxSource:
@@ -502,9 +502,9 @@ class TestGmailApiProfile:
 class TestMessageSourceProtocol:
     """Structural tests for the MessageSource protocol."""
 
-    def test_mbox_source_satisfies_protocol(self) -> None:
+    def test_mbox_source_satisfies_protocol(self, simple_mbox: Path) -> None:
         """MboxSource should be a valid MessageSource."""
-        source = MboxSource(FIXTURES / "simple.mbox")
+        source = MboxSource(simple_mbox)
         assert hasattr(source, "list_messages")
         assert hasattr(source, "get_message")
         assert hasattr(source, "list_all")

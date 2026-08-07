@@ -2,7 +2,13 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <!-- viewport-fit=cover lets the safe-area-inset-* values in the stylesheet
+       actually mean something on a notched iPhone. -->
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="color-scheme" content="light">
+  <!-- Tints the Safari chrome to match the app rather than leaving it white. -->
+  <meta name="theme-color" content="#f6f8fc">
+  <meta name="apple-mobile-web-app-title" content="archive">
   <title>{% block title %}gmail-archive{% endblock %}</title>
   <link rel="stylesheet" href="/static/style.css?v={{ asset_version }}">
   {# Vendored, not from a CDN. This was a render-blocking cross-origin fetch
@@ -74,6 +80,21 @@
     {% endfor %}
     <a class="rail-item rail-more" href="/labels">All labels &rsaquo;</a>
     {% endif %}
+
+    {# Also in the top bar on desktop; the strip is the only route to these on
+       a phone, where .topnav is hidden. #}
+    <a class="rail-item rail-mobile-only" href="/people">
+      <span class="rail-icon rail-icon-people" aria-hidden="true"></span>
+      <span class="rail-label">People</span>
+    </a>
+    <a class="rail-item rail-mobile-only" href="/trends">
+      <span class="rail-icon rail-icon-trends" aria-hidden="true"></span>
+      <span class="rail-label">Trends</span>
+    </a>
+    <a class="rail-item rail-mobile-only" href="/stats">
+      <span class="rail-icon rail-icon-stats" aria-hidden="true"></span>
+      <span class="rail-label">Stats</span>
+    </a>
 
 
   </nav>

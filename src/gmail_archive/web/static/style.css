@@ -193,6 +193,10 @@ a { color: inherit; text-decoration: none; }
 .shell {
   display: flex;
   height: calc(100vh - var(--topbar-h));
+  /* iOS Safari's 100vh excludes the browser chrome, so a 100vh pane is taller
+     than the screen and its bottom cannot be reached. dvh tracks the visible
+     viewport as the chrome shows and hides. */
+  height: calc(100dvh - var(--topbar-h));
 }
 
 .rail {
@@ -524,12 +528,156 @@ a { color: inherit; text-decoration: none; }
 .message-actions { display: flex; gap: 10px; padding: 0 20px 16px; }
 
 /* ── Narrow screens ───────────────────────────────────────────── */
-@media (max-width: 900px) {
-  .rail { display: none; }
-  .brand { width: auto; }
-  .content { margin: 0 8px 8px; }
-  .row-sender { flex-basis: 120px; }
-  .row-snippet { display: none; }
+/* ── Phones ───────────────────────────────────────────────────────
+ *
+ * Written against an iPhone viewport (390x844). Four things matter here that
+ * do not on a desktop, and each is a real defect rather than a nicety:
+ *
+ * 1. `100vh` on iOS Safari means the viewport *without* the browser chrome,
+ *    so a 100vh layout is taller than the visible area and the bottom is
+ *    unreachable. `100dvh` is the dynamic equivalent; the `100vh` line stays
+ *    first as a fallback for anything that does not know it.
+ * 2. Safari zooms the page when an input smaller than 16px is focused, and
+ *    then does not zoom back out. Every input is 16px.
+ * 3. The rail used to be `display: none` below 900px, which removed every
+ *    mailbox and label from the phone entirely. It is now a horizontal strip
+ *    of pills, which is both reachable and thumb-sized.
+ * 4. Rows were a single 40px line with the snippet hidden. At 390px that left
+ *    a truncated sender and a truncated subject. They are two lines now.
+ */
+@media (max-width: 720px) {
+  body { font-size: 15px; }
+
+  /* The panes scroll, not the page — but on iOS the page must be allowed to
+     settle within the dynamic viewport, hence dvh. */
+  .shell {
+    flex-direction: column;
+    height: calc(100vh - var(--topbar-h));
+    height: calc(100dvh - var(--topbar-h));
+  }
+
+  /* ── Top bar ── */
+  .topbar {
+    gap: 8px;
+    padding: 0 10px;
+    /* Clear of the notch and any rounded corner. */
+    padding-left: max(10px, env(safe-area-inset-left));
+    padding-right: max(10px, env(safe-area-inset-right));
+  }
+  .brand { width: auto; flex: none; }
+  .brand-name { display: none; }        /* the mark alone is recognisable */
+  .topsearch { height: 40px; padding: 0 10px; }
+  .topsearch-input { font-size: 16px; } /* 16px or Safari zooms on focus */
+  .readonly-chip { display: none; }     /* the archive is read-only anyway */
+  .topnav { display: none; }            /* moved into the rail strip below */
+
+  /* ── Rail as a scrolling strip of pills ── */
+  .rail {
+    width: 100%;
+    flex: none;
+    display: flex;
+    gap: 6px;
+    height: auto;
+    padding: 8px 10px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+    border-bottom: 1px solid var(--line);
+  }
+  .rail::-webkit-scrollbar { display: none; }
+
+  .rail-item {
+    flex: none;
+    height: 36px;
+    gap: 8px;
+    padding: 0 14px;
+    border-radius: 999px;
+    border: 1px solid var(--line);
+    background: var(--surface);
+    font-size: 13px;
+  }
+  .rail-item-active { border-color: var(--accent-soft); }
+  .rail-label { max-width: 12ch; }
+  .rail-section { display: none; }
+  .rail-more { padding-left: 14px; }
+
+  /* ── Content ── */
+  .content {
+    margin: 0;
+    border-radius: 0;
+    /* Room for the home indicator. */
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+
+  /* ── Two-line rows ── */
+  .row {
+    height: auto;
+    min-height: 60px;             /* comfortably above the 44px tap target */
+    flex-wrap: wrap;
+    align-items: center;
+    padding: 10px 12px;
+    row-gap: 2px;
+  }
+  .row-star, .row-important { width: 22px; font-size: 16px; }
+  .row-sender {
+    flex: 1 1 auto;
+    order: 1;
+    min-width: 0;
+    font-size: 14px;
+  }
+  .row-date { order: 2; flex: none; }
+  .row-main {
+    order: 3;
+    flex: 1 1 100%;
+    padding-left: 44px;           /* aligns under the sender, past the icons */
+    white-space: normal;
+  }
+  .row-subject { display: block; }
+  .row-snippet {
+    display: -webkit-box;
+    -webkit-line-clamp: 1;
+    line-clamp: 1;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  .row-chip { display: none; }
+
+  /* ── Inbox tabs ── */
+  .tabs { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .tabs::-webkit-scrollbar { display: none; }
+  .tab { padding: 12px 16px; font-size: 13px; white-space: nowrap; }
+
+  /* ── List header and day picker ── */
+  .listbar { flex-wrap: wrap; gap: 8px; padding: 12px; }
+  .daypick { margin-left: 0; flex-wrap: wrap; width: 100%; }
+  .daypick-input { font-size: 16px; flex: 1 1 auto; min-height: 40px; }
+  .daypick-go, .daypick-step, .daypick-clear { min-height: 40px; }
+  .sortbar { margin-left: 0; width: 100%; }
+
+  /* ── Conversation ── */
+  .conv { padding: 14px 12px 48px; }
+  .conv-subject { font-size: 19px; }
+  .conv-meta { gap: 10px; }
+  .conv-date { text-align: left; }
+  .html-body { min-height: 60vh; }
+  .btn { padding: 10px 16px; }          /* tap target */
+  .conv-actions { flex-wrap: wrap; }
+
+  /* ── Wide tables ── */
+  .table-scroll { -webkit-overflow-scrolling: touch; padding: 12px; }
+  .stats-grid { padding: 12px; gap: 8px; }
+  .chipwall { padding: 12px; }
+
+  /* ── Help ── */
+  .help-panel { right: 8px; left: 8px; width: auto; }
+  .help-table td:first-child { width: 40%; }
+}
+
+/* Very narrow phones (iPhone SE, 320px). */
+@media (max-width: 380px) {
+  .rail-label { max-width: 9ch; }
+  .row-main { padding-left: 0; }
 }
 
 .search-warning {
@@ -651,11 +799,19 @@ a { color: inherit; text-decoration: none; }
   .topnav-item { padding: 8px 10px; font-size: 13px; }
 }
 
+/* Login is its own page, so it needs the iOS treatment separately. */
+@media (max-width: 720px) {
+  .login-card { padding: 28px 20px 24px; }
+  .login-input { font-size: 16px; }
+  .login-button { min-height: 46px; }
+}
+
 /* ── Login ────────────────────────────────────────────────────── */
 .login-body {
   display: grid;
   place-items: center;
   min-height: 100vh;
+  min-height: 100dvh;
   background: var(--bg);
   overflow: auto;
 }
@@ -715,4 +871,11 @@ a { color: inherit; text-decoration: none; }
   padding: 4px 10px;
   border-radius: 999px;
   white-space: nowrap;
+}
+
+/* Duplicated destinations: in the top bar on desktop, in the rail strip on a
+   phone where the top bar has no room for them. */
+.rail-mobile-only { display: none; }
+@media (max-width: 720px) {
+  .rail-mobile-only { display: flex; }
 }

@@ -489,3 +489,53 @@ class TestRawDownloadValidation:
         self, client: TestClient
     ) -> None:
         assert client.get("/raw/" + "0" * 64).status_code == 404
+
+
+class TestMobileLayout:
+    """Properties the phone layout depends on.
+
+    Asserted against the stylesheet and templates rather than a rendered page,
+    because these are CSS and meta-tag facts — but they are facts that broke
+    real behaviour on an iPhone, not cosmetics.
+    """
+
+    def _css(self) -> str:
+        import gmail_archive.web as web_pkg
+
+        return (Path(web_pkg.__file__).parent / "static" / "style.css").read_text()
+
+    def _base(self) -> str:
+        import gmail_archive.web as web_pkg
+
+        return (Path(web_pkg.__file__).parent / "templates" / "base.html").read_text()
+
+    def test_full_height_panes_use_dvh(self) -> None:
+        # iOS Safari's 100vh excludes the browser chrome, so a 100vh pane is
+        # taller than the screen and its bottom cannot be scrolled to.
+        assert "100dvh" in self._css()
+
+    def test_no_input_is_small_enough_to_trigger_ios_zoom(self) -> None:
+        # Safari zooms the page when an input under 16px is focused, and does
+        # not zoom back out. Every input rule must reach 16px on a phone.
+        css = self._css()
+        for rule in (".topsearch-input", ".daypick-input", ".login-input"):
+            assert rule in css
+        assert css.count("font-size: 16px") >= 3
+
+    def test_the_viewport_covers_the_notch(self) -> None:
+        # Without viewport-fit=cover the safe-area-inset-* values are zero and
+        # the padding that clears the notch does nothing.
+        assert "viewport-fit=cover" in self._base()
+
+    def test_safe_area_insets_are_respected(self) -> None:
+        assert "env(safe-area-inset-" in self._css()
+
+    def test_navigation_survives_on_a_phone(self) -> None:
+        # The rail used to be display:none below 900px, which removed every
+        # mailbox and label from the phone. People/Trends/Stats live in the
+        # top bar on desktop, so they need a home in the rail strip too.
+        assert "rail-mobile-only" in self._base()
+        assert "rail-mobile-only" in self._css()
+
+    def test_there_is_a_phone_breakpoint(self) -> None:
+        assert "@media (max-width: 720px)" in self._css()
