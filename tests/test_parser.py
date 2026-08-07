@@ -476,3 +476,83 @@ class TestStripUnstorable:
         dirty = {"subject": "a\x00b", "to": [{"name": "c\x00d"}], "n": 5}
         clean = _scrub(dirty)
         assert clean == {"subject": "ab", "to": [{"name": "cd"}], "n": 5}
+
+
+class TestTimezoneGuard:
+    """The +/-15:59 offset guard added in c3adeb6 (#26).
+
+    A Date header like `+17:00` parses fine in email.utils but makes psycopg
+    COPY fail with InvalidTimeZoneDisplacementValue, aborting an entire batch
+    of a thousand messages. The hypothesis property test could not catch it:
+    it only asserts parse() does not raise, and parse() never did — the
+    failure was downstream, in the COPY.
+    """
+
+    def _warnings(self, date_header: str) -> list[str]:
+        from gmail_archive.parser import parse
+
+        raw = f"From: a@example.com\r\nDate: {date_header}\r\n\r\nbody\r\n"
+        parsed = parse(raw.encode(), already_unquoted=True)
+        return [w.code.value for w in parsed.parse_warnings]
+
+    def _date(self, date_header: str) -> object:
+        from gmail_archive.parser import parse
+
+        raw = f"From: a@example.com\r\nDate: {date_header}\r\n\r\nbody\r\n"
+        return parse(raw.encode(), already_unquoted=True).internal_date
+
+    def test_an_offset_beyond_the_postgres_limit_is_dropped(self) -> None:
+        assert self._date("Tue, 1 Jan 2019 12:00:00 +1700") is None
+        assert "date-tz-out-of-range" in self._warnings(
+            "Tue, 1 Jan 2019 12:00:00 +1700"
+        )
+
+    def test_a_negative_offset_beyond_the_limit_is_dropped(self) -> None:
+        assert self._date("Tue, 1 Jan 2019 12:00:00 -1700") is None
+
+    def test_offsets_inside_the_limit_are_kept(self) -> None:
+        # 15:59 is the boundary Postgres accepts; dropping it would discard
+        # legitimate dates.
+        for offset in ("+1559", "-1559", "+0000", "-0800", "+1400"):
+            header = f"Tue, 1 Jan 2019 12:00:00 {offset}"
+            assert self._date(header) is not None, offset
+            assert "date-tz-out-of-range" not in self._warnings(header), offset
+
+    def test_a_naive_date_is_unaffected(self) -> None:
+        assert self._date("Tue, 1 Jan 2019 12:00:00") is not None
+
+    def test_the_value_is_droppped_not_the_message(self) -> None:
+        # A bad Date must not lose the message; it loses the date.
+        from gmail_archive.parser import parse
+
+        raw = (
+            b"From: a@example.com\r\n"
+            b"Date: Tue, 1 Jan 2019 12:00:00 +1700\r\n\r\nkeep me\r\n"
+        )
+        parsed = parse(raw, already_unquoted=True)
+        assert parsed.internal_date is None
+        assert "keep me" in parsed.body_text
+
+
+class TestRequoteIsShared:
+    """export must not re-implement parser.requote_mbox (#18)."""
+
+    def test_deep_quoting_round_trips(self) -> None:
+        # The hand-rolled version handled `From ` and `>From ` and stopped, so
+        # a `>>From ` line came out unquoted and the file no longer round
+        # tripped.
+        from gmail_archive.parser import requote_mbox, unquote_mbox
+
+        # A valid mboxrd body: every line beginning `From ` already carries
+        # at least one `>`, because the writer put it there. A bare `From ` at
+        # the start of a body line cannot occur in a well-formed file, so it
+        # is not what round-tripping has to preserve.
+        original = b">From a\n>>From b\n>>>From c\nplain\n"
+        unquoted, _ = unquote_mbox(original)
+        assert unquoted == b"From a\n>From b\n>>From c\nplain\n"
+        assert requote_mbox(unquoted) == original
+
+    def test_export_uses_the_parser_implementation(self) -> None:
+        import gmail_archive.export as export_module
+
+        assert not hasattr(export_module, "_requote")

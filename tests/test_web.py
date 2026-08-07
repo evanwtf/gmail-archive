@@ -474,3 +474,18 @@ class TestAttachmentDownload:
 
     def test_malformed_hash_is_404(self, client: TestClient) -> None:
         assert client.get("/messages/nope/attachments/0").status_code == 404
+
+
+class TestRawDownloadValidation:
+    """`/raw/{sha}` must 404 on a malformed hash, not 500 (#19)."""
+
+    def test_malformed_hashes_are_404(self, client: TestClient) -> None:
+        # path_for() raises ValueError on a wrong-length string, which the
+        # route's FileNotFoundError handler does not catch.
+        for bad in ("nope", "0" * 63, "0" * 65, "G" * 64, "0" * 63 + "Z", "%2e%2e"):
+            assert client.get(f"/raw/{bad}").status_code == 404, bad
+
+    def test_a_well_formed_but_absent_hash_is_still_404(
+        self, client: TestClient
+    ) -> None:
+        assert client.get("/raw/" + "0" * 64).status_code == 404

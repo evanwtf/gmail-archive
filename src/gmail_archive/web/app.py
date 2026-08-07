@@ -902,6 +902,12 @@ def raw_message(sha256: str) -> Response:
     Served with ``Content-Disposition: attachment`` so the browser never
     renders it inline, regardless of MIME type.
     """
+    # Validated before the blob store sees it: `path_for` raises ValueError on
+    # anything that is not 64 characters, which would surface as a 500 rather
+    # than the 404 a malformed URL deserves.
+    if not _SHA256_RE.fullmatch(sha256):
+        raise HTTPException(status_code=404, detail="Message not found")
+
     store = _get_store()
     try:
         data = store.get(sha256)

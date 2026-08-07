@@ -12,6 +12,7 @@ from pathlib import Path
 
 import psycopg
 
+from gmail_archive.parser import requote_mbox
 from gmail_archive.storage import BlobStore
 
 logger = logging.getLogger(__name__)
@@ -19,23 +20,6 @@ logger = logging.getLogger(__name__)
 #: Mboxrd separator line. The leading `From ` is the mbox message delimiter;
 #: the remainder is the envelope sender and a timestamp.
 _MBOX_SEP = b"From MAILER-DAEMON@archive  Thu Jan  1 00:00:00 1970\n"
-
-
-def _requote(body: bytes) -> bytes:
-    """Re-quote ``>From `` lines for mboxrd format.
-
-    The blob store holds unquoted RFC822 bytes. Mboxrd requires that any line
-    starting with ``From `` be prefixed with ``>``, and any line starting with
-    ``>From `` be prefixed with another ``>``, etc.
-    """
-    lines = body.split(b"\n")
-    out: list[bytes] = []
-    for line in lines:
-        if line.startswith(b"From ") or line.startswith(b">From "):
-            out.append(b">" + line)
-        else:
-            out.append(line)
-    return b"\n".join(out)
 
 
 def export_mbox(
@@ -107,7 +91,7 @@ def export_mbox(
                 continue
 
             fh.write(_MBOX_SEP)
-            fh.write(_requote(body))
+            fh.write(requote_mbox(body))
             fh.write(b"\n")
             count += 1
 
