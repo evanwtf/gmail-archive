@@ -75,6 +75,12 @@ jobs:
         # that until now they ran nowhere at all.
         env:
           GMAIL_ARCHIVE_TEST_DATABASE_URL: postgresql://gmail_archive:ci@localhost:5432/gmail_archive_test
+          # The web tests drive the real app through TestClient, and the app
+          # reads its own DSN from GMAIL_ARCHIVE_DATABASE_URL — the test one
+          # only tells the suite which tests to un-skip. Both are needed, a
+          # distinction nothing had surfaced because these tests had never
+          # run anywhere.
+          GMAIL_ARCHIVE_DATABASE_URL: postgresql://gmail_archive:ci@localhost:5432/gmail_archive_test
         run: uv run pytest -m integration -q
 
   # A separate job so a broken Dockerfile is distinguishable at a glance from
