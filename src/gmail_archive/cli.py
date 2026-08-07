@@ -169,6 +169,30 @@ def ingest(mbox: Path, workers: int | None, batch_size: int | None) -> None:
 
 
 @main.command()
+def analyze() -> None:
+    """Classify senders as human correspondence or automated mail.
+
+    One pass over the corpus, writing `sender_profiles`. Run it after an
+    ingest: the signals are corpus-wide (has this address ever been replied
+    to?) and cannot be evaluated one message at a time. Manual overrides are
+    preserved.
+    """
+    from gmail_archive.analytics import profile_summary, rebuild_sender_profiles
+
+    settings = Settings.from_env()
+    if not settings.database_url:
+        click.echo("GMAIL_ARCHIVE_DATABASE_URL is not set", err=True)
+        raise click.Abort()
+
+    with psycopg.connect(settings.database_url) as conn:
+        profiled = rebuild_sender_profiles(conn)
+        conn.commit()
+        summary = profile_summary(conn)
+
+    click.echo(json.dumps({"profiled": profiled, **summary}, indent=2))
+
+
+@main.command()
 def stats() -> None:
     """Print archive statistics."""
     from gmail_archive.query import stats as _stats

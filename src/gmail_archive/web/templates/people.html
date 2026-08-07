@@ -1,0 +1,118 @@
+{% extends "base.html" %}
+{% block title %}People — gmail-archive{% endblock %}
+{% block content %}
+<div class="listbar">
+  <span class="listbar-title">People</span>
+  <span class="listbar-count">
+    {{ "{:,}".format(summary.get("human_senders", 0)) }} human ·
+    {{ "{:,}".format(summary.get("bulk_senders", 0)) }} bulk
+  </span>
+  <span class="sortbar">
+    {% for key, caption in [("human", "Humans"), ("bulk", "Bulk"), ("all", "All")] %}
+      {%- if kind == key -%}<strong class="sort-active">{{ caption }}</strong>
+      {%- else -%}<a href="/people?kind={{ key }}">{{ caption }}</a>{%- endif -%}
+    {% endfor %}
+  </span>
+</div>
+
+{% if not summary.get("total_senders") %}
+<p class="empty">
+  No sender profiles yet. Run <code>gmail-archive analyze</code> to classify
+  senders, then reload.
+</p>
+{% else %}
+
+{% if lost_touch and kind != "bulk" %}
+<h2 class="stats-heading">Lost touch</h2>
+<p class="stats-note">People you exchanged real mail with, who have not
+  written in over two years. Ranked by how much you wrote against how long
+  it has been silent.</p>
+<div class="table-scroll">
+  <table class="sizes">
+    <thead><tr>
+      <th>Address</th><th class="num">From them</th><th class="num">To them</th>
+      <th class="num">First</th><th class="num">Last</th>
+    </tr></thead>
+    <tbody>
+      {% for p in lost_touch %}
+      <tr>
+        <td><a href="/people/{{ p.address|urlencode }}">{{ p.address }}</a></td>
+        <td class="num">{{ "{:,}".format(p.received_count) }}</td>
+        <td class="num">{{ "{:,}".format(p.sent_to_count) }}</td>
+        <td class="num">{{ p.first_seen.date() if p.first_seen else "—" }}</td>
+        <td class="num strong">{{ p.last_seen.date() if p.last_seen else "—" }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+
+<h2 class="stats-heading">Top senders{% if kind != "all" %} ({{ kind }}){% endif %}</h2>
+<div class="table-scroll">
+  <table class="sizes">
+    <thead><tr>
+      <th>Address</th><th class="num">Received</th><th class="num">You sent</th>
+      <th class="num">First</th><th class="num">Last</th><th>Why</th>
+    </tr></thead>
+    <tbody>
+      {% for p in senders %}
+      <tr>
+        <td><a href="/people/{{ p.address|urlencode }}">{{ p.address }}</a></td>
+        <td class="num strong">{{ "{:,}".format(p.received_count) }}</td>
+        <td class="num">{{ "{:,}".format(p.sent_to_count) }}</td>
+        <td class="num">{{ p.first_seen.date() if p.first_seen else "—" }}</td>
+        <td class="num">{{ p.last_seen.date() if p.last_seen else "—" }}</td>
+        <td>{% for e in p.evidence %}<span class="row-chip">{{ e }}</span>{% endfor %}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<h2 class="stats-heading">Top domains{% if kind != "all" %} ({{ kind }}){% endif %}</h2>
+<div class="table-scroll">
+  <table class="sizes">
+    <thead><tr>
+      <th>Domain</th><th class="num">Messages</th><th class="num">Senders</th>
+      <th class="num">Human senders</th><th class="num">First</th><th class="num">Last</th>
+    </tr></thead>
+    <tbody>
+      {% for d in domains %}
+      <tr>
+        <td><code>{{ d.domain }}</code></td>
+        <td class="num strong">{{ "{:,}".format(d.message_count) }}</td>
+        <td class="num">{{ "{:,}".format(d.sender_count) }}</td>
+        <td class="num">{{ "{:,}".format(d.human_senders) }}</td>
+        <td class="num">{{ d.first_seen.date() if d.first_seen else "—" }}</td>
+        <td class="num">{{ d.last_seen.date() if d.last_seen else "—" }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<h2 class="stats-heading">Who you wrote to</h2>
+<p class="stats-note">From the <code>Sent</code> label — the addresses you
+  chose to type, which is the hardest list here to fake.</p>
+<div class="table-scroll">
+  <table class="sizes">
+    <thead><tr>
+      <th>Address</th><th class="num">Messages</th>
+      <th class="num">First</th><th class="num">Last</th>
+    </tr></thead>
+    <tbody>
+      {% for r in recipients %}
+      <tr>
+        <td><a href="/people/{{ r.address|urlencode }}">{{ r.address }}</a></td>
+        <td class="num strong">{{ "{:,}".format(r.message_count) }}</td>
+        <td class="num">{{ r.first_sent.date() if r.first_sent else "—" }}</td>
+        <td class="num">{{ r.last_sent.date() if r.last_sent else "—" }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+{% endif %}
+{% endblock %}

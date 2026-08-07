@@ -1,0 +1,77 @@
+{% extends "base.html" %}
+{% block title %}Trends — gmail-archive{% endblock %}
+{% block content %}
+<div class="listbar">
+  <span class="listbar-title">Activity over time</span>
+  <span class="listbar-count">{{ years|length }} years</span>
+</div>
+
+{% if not years %}
+<p class="empty">No dated messages to chart.</p>
+{% else %}
+
+<h2 class="stats-heading">Sent and received</h2>
+<p class="stats-note">Bars are messages received; the line is the share of
+  the year's mail that you sent. Hover for exact figures.</p>
+
+{# Inline SVG, generated server-side. The dataset is a couple of dozen points,
+   which does not justify a charting library — and a CDN script is exactly the
+   mistake #14 was. #}
+<div class="table-scroll">
+  <svg class="chart" viewBox="0 0 {{ years|length * 44 + 40 }} 240" role="img"
+       aria-label="Messages received per year with the share sent">
+    {% set rmax = peak_received or 1 %}
+    {% for y in years %}
+      {% set x = loop.index0 * 44 + 40 %}
+      {% set h = (y.received / rmax * 170)|round(1) %}
+      <rect class="chart-bar" x="{{ x }}" y="{{ 190 - h }}" width="26" height="{{ h }}">
+        <title>{{ y.year }}: {{ "{:,}".format(y.received) }} received, {{ "{:,}".format(y.sent) }} sent ({{ "%.1f"|format(y.sent_share) }}% sent)</title>
+      </rect>
+      <text class="chart-xlabel" x="{{ x + 13 }}" y="208">{{ y.year % 100 }}</text>
+    {% endfor %}
+    {# Sent share, scaled to its own maximum so the collapse is visible. #}
+    {% set smax = years|map(attribute='sent_share')|max or 1 %}
+    <polyline class="chart-line" points="
+      {%- for y in years %}{{ loop.index0 * 44 + 53 }},{{ (190 - y.sent_share / smax * 170)|round(1) }} {% endfor -%}
+    "/>
+    {% for y in years %}
+    <circle class="chart-dot" cx="{{ loop.index0 * 44 + 53 }}"
+            cy="{{ (190 - y.sent_share / smax * 170)|round(1) }}" r="3">
+      <title>{{ y.year }}: {{ "%.1f"|format(y.sent_share) }}% of that year's mail was sent by you</title>
+    </circle>
+    {% endfor %}
+  </svg>
+</div>
+
+<h2 class="stats-heading">Year by year</h2>
+<div class="table-scroll">
+  <table class="sizes">
+    <thead><tr>
+      <th>Year</th><th class="num">Sent</th><th class="num">Received</th>
+      <th class="num">Sent %</th><th class="num">Human</th><th class="num">Bulk</th>
+      <th class="num">People mailed</th>
+    </tr></thead>
+    <tbody>
+      {% for y in years %}
+      <tr>
+        <td><a href="/?label=&amp;on={{ y.year }}-01-01">{{ y.year }}</a></td>
+        <td class="num">{{ "{:,}".format(y.sent) }}</td>
+        <td class="num">{{ "{:,}".format(y.received) }}</td>
+        <td class="num strong">{{ "%.1f"|format(y.sent_share) }}%</td>
+        <td class="num">{{ "{:,}".format(y.human_received) }}</td>
+        <td class="num">{{ "{:,}".format(y.bulk_received) }}</td>
+        <td class="num">{{ "{:,}".format(y.people_mailed) }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<p class="stats-note">
+  Only mail Gmail still held when the export was taken, so early years may
+  undercount. <code>Sent</code> is a Gmail label, so this measures mail sent
+  through Gmail. Human and bulk come from <code>gmail-archive analyze</code>;
+  without it every message counts as human.
+</p>
+{% endif %}
+{% endblock %}

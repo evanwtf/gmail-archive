@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% block title %}{{ profile.address }} — gmail-archive{% endblock %}
+{% block content %}
+<div class="listbar">
+  <span class="listbar-title">{{ profile.address }}</span>
+  <span class="listbar-count">{{ profile.kind }}</span>
+</div>
+
+<div class="stats-grid">
+  <div class="stat-card">
+    <span class="stat-value">{{ "{:,}".format(profile.received_count) }}</span>
+    <span class="stat-label">From them</span>
+  </div>
+  <div class="stat-card">
+    <span class="stat-value">{{ "{:,}".format(profile.sent_to_count) }}</span>
+    <span class="stat-label">You sent them</span>
+  </div>
+  <div class="stat-card">
+    <span class="stat-value">{{ profile.first_seen.date() if profile.first_seen else "—" }}</span>
+    <span class="stat-label">First heard from</span>
+  </div>
+  <div class="stat-card">
+    <span class="stat-value">{{ profile.last_seen.date() if profile.last_seen else "—" }}</span>
+    <span class="stat-label">Last heard from</span>
+  </div>
+</div>
+
+{% if years %}
+<h2 class="stats-heading">By year</h2>
+{% set ymax = years|map(attribute=1)|max %}
+<div class="bars">
+  {% for year, count in years %}
+  <div class="bar-col" title="{{ year }}: {{ '{:,}'.format(count) }} messages">
+    <div class="bar" style="height: {{ (count / ymax * 100)|round(1) }}%"></div>
+    <div class="bar-label">{{ year|string|truncate(5, true, "") }}</div>
+  </div>
+  {% endfor %}
+</div>
+{% endif %}
+
+<table class="kv stats-kv">
+  <tr><th>Domain</th><td><code>{{ profile.domain }}</code></td></tr>
+  <tr><th>Classified as</th><td>{{ profile.kind }}</td></tr>
+  <tr><th>Evidence</th><td>
+    {% for e in profile.evidence %}<span class="row-chip">{{ e }}</span>{% else %}—{% endfor %}
+  </td></tr>
+</table>
+
+<div class="message-actions">
+  <a class="btn" href="/search?q=from:{{ profile.address|urlencode }}">Mail from them</a>
+  <a class="btn" href="/search?q=to:{{ profile.address|urlencode }}">Mail to them</a>
+  <a class="btn" href="/people">All people</a>
+</div>
+{% endblock %}

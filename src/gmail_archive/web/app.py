@@ -19,6 +19,16 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
+from gmail_archive.analytics import (
+    correspondent,
+    correspondent_years,
+    lost_touch,
+    profile_summary,
+    top_domains,
+    top_recipients,
+    top_senders,
+    yearly_activity,
+)
 from gmail_archive.config import Settings
 from gmail_archive.parser import iter_attachment_payloads
 from gmail_archive.query import (
@@ -336,6 +346,96 @@ def messages_page(
         label=label,
         limit=limit,
     )
+
+
+@app.get("/people", response_class=HTMLResponse)
+def people_page(request: Request, kind: str = "human") -> HTMLResponse:
+    """Who you talk to, and who just mails you.
+
+    ``kind`` is human (default), bulk, or all. Human first because two thirds
+    of this archive is not correspondence, and an unfiltered ranking of
+    senders is a ranking of marketing departments.
+    """
+    if kind not in ("human", "bulk", "all"):
+        kind = "human"
+    selected = None if kind == "all" else kind
+
+    try:
+        with _get_conn() as conn:
+            summary = profile_summary(conn)
+            senders = top_senders(conn, kind=selected, limit=40)
+            domains = top_domains(conn, kind=selected, limit=25)
+            recipients = top_recipients(conn, limit=40)
+            faded = lost_touch(conn, limit=20)
+            context = _chrome(conn)
+    except psycopg.Error:
+        return templates.TemplateResponse(
+            request,
+            "error.html",
+            {"message": "Database is unavailable."},
+            status_code=503,
+        )
+
+    context.update(
+        {
+            "kind": kind,
+            "summary": summary,
+            "senders": senders,
+            "domains": domains,
+            "recipients": recipients,
+            "lost_touch": faded,
+        }
+    )
+    return templates.TemplateResponse(request, "people.html", context)
+
+
+@app.get("/people/{address}", response_class=HTMLResponse)
+def correspondent_page(request: Request, address: str) -> HTMLResponse:
+    """One correspondent: volume, span, and activity by year."""
+    try:
+        with _get_conn() as conn:
+            profile = correspondent(conn, address)
+            years = correspondent_years(conn, address) if profile else []
+            context = _chrome(conn)
+    except psycopg.Error:
+        return templates.TemplateResponse(
+            request,
+            "error.html",
+            {"message": "Database is unavailable."},
+            status_code=503,
+        )
+
+    if profile is None:
+        raise HTTPException(status_code=404, detail="No such correspondent")
+
+    context.update({"profile": profile, "years": years})
+    return templates.TemplateResponse(request, "correspondent.html", context)
+
+
+@app.get("/trends", response_class=HTMLResponse)
+def trends_page(request: Request) -> HTMLResponse:
+    """Activity by year: the shape of 22 years of mail."""
+    try:
+        with _get_conn() as conn:
+            years = yearly_activity(conn)
+            context = _chrome(conn)
+    except psycopg.Error:
+        return templates.TemplateResponse(
+            request,
+            "error.html",
+            {"message": "Database is unavailable."},
+            status_code=503,
+        )
+
+    context.update(
+        {
+            "years": years,
+            "peak_sent": max((y.sent for y in years), default=0),
+            "peak_received": max((y.received for y in years), default=0),
+            "peak_people": max((y.people_mailed for y in years), default=0),
+        }
+    )
+    return templates.TemplateResponse(request, "trends.html", context)
 
 
 @app.get("/stats", response_class=HTMLResponse)
