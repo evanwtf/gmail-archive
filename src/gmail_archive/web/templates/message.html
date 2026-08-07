@@ -41,6 +41,19 @@
     {% endif %}
   </div>
 
+  {% if msg.attachments %}
+  <div class="attachments">
+    <div class="attachments-head">{{ msg.attachments|length }} attachment{{ 's' if msg.attachments|length != 1 else '' }}</div>
+    {% for att in msg.attachments %}
+    <a class="attachment" href="/messages/{{ msg.raw_sha256 }}/attachments/{{ att.part_index }}" download>
+      <span class="attachment-icon" aria-hidden="true">&#128206;</span>
+      <span class="attachment-name">{{ att.filename|default("(unnamed)", true) }}</span>
+      <span class="attachment-meta">{{ att.mime_type }} &middot; {{ "{:,}".format(att.size_bytes) }} bytes</span>
+    </a>
+    {% endfor %}
+  </div>
+  {% endif %}
+
   <div class="conv-actions">
     <a href="/messages/{{ msg.raw_sha256 }}/raw" class="btn">View raw text</a>
     <a href="/raw/{{ msg.raw_sha256 }}" class="btn" download>Download</a>

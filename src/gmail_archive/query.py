@@ -171,6 +171,10 @@ class MessageFull:
     body_html: str | None
     labels: list[str]
     parse_warnings: list[dict[str, str]]
+    #: One entry per attachment: part_index, filename, mime_type, size_bytes.
+    #: The bytes are not stored separately — they live in the raw message in
+    #: the blob store and are re-extracted on demand.
+    attachments: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
@@ -452,7 +456,12 @@ def get_message_full(
         "  m.reply_to, m.in_reply_to, m.references_ids, m.internal_date,"
         "  m.body_text, m.body_html, m.parse_warnings,"
         "  coalesce((select json_agg(l.label) from labels l"
-        "    where l.raw_sha256 = m.raw_sha256), '[]'::json) as labels"
+        "    where l.raw_sha256 = m.raw_sha256), '[]'::json) as labels,"
+        "  coalesce((select json_agg(json_build_object("
+        "      'part_index', a.part_index, 'filename', a.filename,"
+        "      'mime_type', a.mime_type, 'size_bytes', a.size_bytes)"
+        "    order by a.part_index) from attachments a"
+        "    where a.raw_sha256 = m.raw_sha256), '[]'::json) as attachments"
         " from messages m"
         " where m.raw_sha256 = %s",
         (raw_sha256,),
@@ -478,6 +487,7 @@ def get_message_full(
         body_html=row[14],
         labels=list(row[16]) if row[16] else [],
         parse_warnings=list(row[15]) if row[15] else [],
+        attachments=list(row[17]) if row[17] else [],
     )
 
 

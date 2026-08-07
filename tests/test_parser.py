@@ -357,3 +357,78 @@ class TestAgainstTheDefaultMix:
         # Every message yields a row; nothing is dropped for being defective.
         assert sum(1 for p in parsed if p.internal_date is not None) > 700
         assert sum(1 for p in parsed if p.parse_warnings) > 0
+
+
+class TestAttachmentExtraction:
+    """Re-extracting attachment bytes from a raw message.
+
+    Ingest stores an attachment's metadata but not its bytes, so serving one
+    means parsing the message again. The indices must match what `parse()`
+    assigned, or the archive hands you the wrong file.
+    """
+
+    RAW = (
+        b"From: a@example.com\r\n"
+        b"Subject: two files\r\n"
+        b'Content-Type: multipart/mixed; boundary="B"\r\n'
+        b"\r\n"
+        b"--B\r\n"
+        b"Content-Type: text/plain\r\n"
+        b"\r\n"
+        b"body text\r\n"
+        b"--B\r\n"
+        b"Content-Type: application/pdf\r\n"
+        b'Content-Disposition: attachment; filename="first.pdf"\r\n'
+        b"\r\n"
+        b"PDFBYTES\r\n"
+        b"--B\r\n"
+        b"Content-Type: text/csv\r\n"
+        b'Content-Disposition: attachment; filename="second.csv"\r\n'
+        b"\r\n"
+        b"a,b,c\r\n"
+        b"--B--\r\n"
+    )
+
+    def test_indices_and_order_match_parse(self) -> None:
+        from gmail_archive.parser import iter_attachment_payloads, parse
+
+        parsed = parse(self.RAW, already_unquoted=True)
+        extracted = list(iter_attachment_payloads(self.RAW))
+
+        assert [a.filename for a in parsed.attachments] == ["first.pdf", "second.csv"]
+        assert [idx for idx, _, _ in extracted] == [0, 1]
+        assert [att.filename for _, att, _ in extracted] == [
+            a.filename for a in parsed.attachments
+        ]
+
+    def test_content_hashes_match_what_ingest_recorded(self) -> None:
+        # The database stores content_sha256 from parse(); if extraction
+        # disagreed, a download would silently return different bytes.
+        from gmail_archive.parser import iter_attachment_payloads, parse
+
+        parsed = parse(self.RAW, already_unquoted=True)
+        extracted = list(iter_attachment_payloads(self.RAW))
+        assert [att.sha256 for _, att, _ in extracted] == [
+            a.sha256 for a in parsed.attachments
+        ]
+
+    def test_payload_bytes_are_decoded(self) -> None:
+        from gmail_archive.parser import iter_attachment_payloads
+
+        payloads = [payload for _, _, payload in iter_attachment_payloads(self.RAW)]
+        assert payloads[0] == b"PDFBYTES"
+        assert payloads[1] == b"a,b,c"
+
+    def test_the_body_is_not_an_attachment(self) -> None:
+        from gmail_archive.parser import iter_attachment_payloads
+
+        assert all(
+            b"body text" not in payload
+            for _, _, payload in iter_attachment_payloads(self.RAW)
+        )
+
+    def test_garbage_yields_nothing_rather_than_raising(self) -> None:
+        from gmail_archive.parser import iter_attachment_payloads
+
+        assert list(iter_attachment_payloads(b"")) == []
+        assert list(iter_attachment_payloads(b"\xff\xfe not a message")) == []

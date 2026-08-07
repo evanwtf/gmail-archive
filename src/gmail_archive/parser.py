@@ -27,6 +27,7 @@ import email.message
 import email.utils
 import hashlib
 import re
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
@@ -278,6 +279,63 @@ def _bound_search_text(text: str, warnings: list[ParseWarning]) -> str:
     return encoded[:SEARCH_TEXT_MAX_BYTES].decode("utf-8", errors="ignore")
 
 
+def is_attachment_part(part: email.message.Message) -> bool:
+    """Whether `parse()` counts this MIME part as an attachment.
+
+    Shared with `iter_attachment_payloads` so the two can never disagree.
+    `part_index` in the database is a position in *this* sequence, not a MIME
+    part number, so anything re-deriving it has to apply the same predicate in
+    the same walk order or it will serve the wrong file.
+    """
+    if part.is_multipart():
+        return False
+    return (part.get_content_disposition() or "").lower() == "attachment" or bool(
+        part.get_filename()
+    )
+
+
+def iter_attachment_payloads(raw: bytes) -> Iterator[tuple[int, Attachment, bytes]]:
+    """Re-extract attachments, with their bytes, from a raw message.
+
+    Ingest records an attachment's name, type, size and content hash but not
+    its bytes — the raw message in the blob store already holds them, and
+    storing them twice would roughly double the archive. Serving one therefore
+    means parsing the message again on demand, which is why this exists.
+
+    Yields `(part_index, attachment, payload)` in exactly the order `parse()`
+    numbered them. Undecodable parts are skipped by both, so the indices line
+    up with the `attachments` table.
+    """
+    try:
+        msg = email.message_from_bytes(raw)
+        walker = list(msg.walk())
+    except Exception:
+        return
+
+    index = 0
+    for part in walker:
+        if not is_attachment_part(part):
+            continue
+        try:
+            blob = part.get_payload(decode=True)
+        except Exception:
+            continue
+        if not isinstance(blob, bytes):
+            continue
+        filename = part.get_filename()
+        yield (
+            index,
+            Attachment(
+                filename=_decode_header(filename, []) if filename else None,
+                mime_type=(part.get_content_type() or "").lower(),
+                size=len(blob),
+                sha256=hashlib.sha256(blob).hexdigest(),
+            ),
+            blob,
+        )
+        index += 1
+
+
 def parse(raw: bytes, *, already_unquoted: bool = False) -> ParsedMessage:
     """Parse one message. Never raises.
 
@@ -349,10 +407,9 @@ def parse(raw: bytes, *, already_unquoted: bool = False) -> ParsedMessage:
         if part.is_multipart():
             continue
         content_type = (part.get_content_type() or "").lower()
-        disposition = (part.get_content_disposition() or "").lower()
         filename = part.get_filename()
 
-        if disposition == "attachment" or filename:
+        if is_attachment_part(part):
             try:
                 blob = part.get_payload(decode=True)
             except Exception as exc:

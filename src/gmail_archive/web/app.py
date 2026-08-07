@@ -20,6 +20,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from gmail_archive.config import Settings
+from gmail_archive.parser import iter_attachment_payloads
 from gmail_archive.query import (
     CATEGORY_TABS,
     DEFAULT_SEARCH_SORT,
@@ -514,6 +515,57 @@ def raw_message_view(request: Request, sha256: str) -> HTMLResponse:
         }
     )
     return templates.TemplateResponse(request, "raw.html", context)
+
+
+#: Anything that could make a saved filename escape its directory or confuse a
+#: shell. The archive stores the filename exactly as the sender declared it —
+#: including `../../etc/passwd`, which the fixture generator produces on
+#: purpose — so it is sanitised at the moment of serving, never before.
+_UNSAFE_FILENAME_RE = re.compile(r'[/\\:\x00-\x1f"\']')
+
+
+def _safe_filename(name: str | None, fallback: str) -> str:
+    cleaned = _UNSAFE_FILENAME_RE.sub("_", name or "").strip(". ")
+    return cleaned[:120] or fallback
+
+
+@app.get("/messages/{sha256}/attachments/{index}")
+def message_attachment(sha256: str, index: int) -> Response:
+    """Serve one attachment, re-extracted from the raw message.
+
+    Ingest records an attachment's metadata but not its bytes: the raw message
+    already holds them, and storing them twice would roughly double the
+    archive. So the message is re-parsed here and the part is pulled out by
+    the same index ingest assigned — see `parser.iter_attachment_payloads`,
+    which shares its predicate with `parse()` precisely so the numbering
+    cannot drift.
+
+    Served as `application/octet-stream` with `Content-Disposition:
+    attachment`, regardless of the declared type. A twenty-year archive
+    contains plenty of mail whose Content-Type is wrong, wishful, or hostile,
+    and none of it is worth handing to a browser to render.
+    """
+    if not _SHA256_RE.fullmatch(sha256) or index < 0:
+        raise HTTPException(status_code=404, detail="Attachment not found")
+
+    store = _get_store()
+    try:
+        raw = store.get(sha256)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Message not found") from None
+
+    for part_index, attachment, payload in iter_attachment_payloads(raw):
+        if part_index == index:
+            filename = _safe_filename(attachment.filename, f"attachment-{index}")
+            return Response(
+                content=payload,
+                media_type="application/octet-stream",
+                headers={
+                    "Content-Disposition": f'attachment; filename="{filename}"',
+                },
+            )
+
+    raise HTTPException(status_code=404, detail="Attachment not found")
 
 
 @app.get("/raw/{sha256}")

@@ -408,3 +408,69 @@ class TestAssetVersioning:
         (tmp_path / "static").mkdir()
         (tmp_path / "static" / "style.css").write_text("body{}")
         assert app_module._asset_version() != first
+
+
+class TestAttachmentDownload:
+    """Attachments are re-extracted from the raw message on demand."""
+
+    RAW = (
+        b"From: a@example.com\r\n"
+        b'Content-Type: multipart/mixed; boundary="B"\r\n\r\n'
+        b"--B\r\nContent-Type: text/plain\r\n\r\nbody\r\n"
+        b"--B\r\nContent-Type: application/pdf\r\n"
+        b'Content-Disposition: attachment; filename="report.pdf"\r\n\r\nPDFBYTES\r\n'
+        b"--B\r\nContent-Type: text/html\r\n"
+        b'Content-Disposition: attachment; filename="../../etc/passwd"\r\n\r\nEVIL\r\n'
+        b"--B--\r\n"
+    )
+
+    @pytest.fixture
+    def sha(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> str:
+        monkeypatch.setenv("GMAIL_ARCHIVE_BLOB_DIR", str(tmp_path))
+        return BlobStore(tmp_path).put(self.RAW).sha256
+
+    def test_serves_the_attachment_bytes(self, client: TestClient, sha: str) -> None:
+        response = client.get(f"/messages/{sha}/attachments/0")
+        assert response.status_code == 200
+        assert response.content == b"PDFBYTES"
+
+    def test_served_as_an_attachment_never_inline(
+        self, client: TestClient, sha: str
+    ) -> None:
+        response = client.get(f"/messages/{sha}/attachments/0")
+        assert response.headers["content-disposition"].startswith("attachment")
+        # Declared type is ignored: twenty years of mail contains plenty of
+        # Content-Type headers that are wrong, wishful, or hostile.
+        assert response.headers["content-type"] == "application/octet-stream"
+        assert response.headers["x-content-type-options"] == "nosniff"
+
+    def test_path_traversal_in_the_filename_is_neutralised(
+        self, client: TestClient, sha: str
+    ) -> None:
+        # The archive stores the filename exactly as declared, including this.
+        response = client.get(f"/messages/{sha}/attachments/1")
+        assert response.status_code == 200
+        name = response.headers["content-disposition"].split("filename=")[1].strip('"')
+
+        # What makes traversal possible is a path separator, not the dots. With
+        # every separator gone the name is a single, inert path segment, so
+        # "_.._etc_passwd" is a fine thing to save to disk.
+        assert "/" not in name
+        assert "\\" not in name
+        assert name not in ("..", ".")
+        # And it cannot break out of the quoted header value either.
+        assert '"' not in name
+
+    def test_html_attachment_is_not_served_as_html(
+        self, client: TestClient, sha: str
+    ) -> None:
+        # A text/html attachment served inline would run in this origin.
+        response = client.get(f"/messages/{sha}/attachments/1")
+        assert "text/html" not in response.headers["content-type"]
+
+    def test_out_of_range_index_is_404(self, client: TestClient, sha: str) -> None:
+        assert client.get(f"/messages/{sha}/attachments/9").status_code == 404
+        assert client.get(f"/messages/{sha}/attachments/-1").status_code == 404
+
+    def test_malformed_hash_is_404(self, client: TestClient) -> None:
+        assert client.get("/messages/nope/attachments/0").status_code == 404
