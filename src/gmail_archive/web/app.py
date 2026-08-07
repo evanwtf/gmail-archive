@@ -399,6 +399,7 @@ def search_page(
             "offset": offset,
             "limit": limit,
             "sort": sort,
+            "parsed": result.parsed,
         }
     )
     return templates.TemplateResponse(request, "search.html", context)

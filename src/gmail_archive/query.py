@@ -18,6 +18,9 @@ from typing import Any
 
 import psycopg
 
+from gmail_archive.searchquery import ParsedQuery
+from gmail_archive.searchquery import parse as parse_search
+
 logger = logging.getLogger(__name__)
 
 #: Gmail's own labels, as they arrive in a Takeout export. The UI renders these
@@ -177,6 +180,9 @@ class SearchResult:
     messages: list[MessageRow]
     total: int
     query: str
+    #: How the query string was understood, so the UI can echo the filters
+    #: back and report any operator it had to reject.
+    parsed: ParsedQuery = field(default_factory=ParsedQuery)
 
 
 @dataclass
@@ -267,20 +273,90 @@ def search(
             f"unknown sort {sort!r}; expected one of {sorted(SEARCH_SORTS)}"
         )
 
-    if not query.strip():
-        return SearchResult(messages=[], total=0, query=query)
+    parsed = parse_search(query)
+    if parsed.is_empty:
+        return SearchResult(messages=[], total=0, query=query, parsed=parsed)
 
-    # Count first (cheap with the GIN index).
+    conditions: list[str] = []
+    params: dict[str, Any] = {"limit": limit, "offset": offset}
+
+    # Free text goes to the GIN index. A query made only of operators skips it
+    # entirely — `from:alice` is a perfectly good search with no text in it.
+    if parsed.text:
+        conditions.append("m.search_tsv @@ websearch_to_tsquery('english', %(q)s)")
+        params["q"] = parsed.text
+
+    # Address and subject matching is substring, case-insensitive: people
+    # remember "amazon" or a first name, not a full RFC 5322 address.
+    for i, value in enumerate(parsed.from_addrs):
+        conditions.append(f"m.from_addr ilike %(from{i})s")
+        params[f"from{i}"] = f"%{value}%"
+    for i, value in enumerate(parsed.to_addrs):
+        # array_to_string so one pattern can match any recipient.
+        conditions.append(f"array_to_string(m.to_addrs, ' ') ilike %(to{i})s")
+        params[f"to{i}"] = f"%{value}%"
+    for i, value in enumerate(parsed.subjects):
+        conditions.append(f"m.subject ilike %(subj{i})s")
+        params[f"subj{i}"] = f"%{value}%"
+
+    # Labels match exactly — they are a controlled vocabulary, and `label:Bank`
+    # matching "Bank Alerts" would be a surprise.
+    for i, value in enumerate(parsed.labels):
+        conditions.append(
+            f"exists (select 1 from labels l where l.raw_sha256 = m.raw_sha256"
+            f" and l.label = %(label{i})s)"
+        )
+        params[f"label{i}"] = value
+
+    if parsed.before is not None:
+        conditions.append("m.internal_date < %(before)s::timestamptz")
+        params["before"] = parsed.before
+    if parsed.after is not None:
+        # Inclusive: `after:2020-01-01` should include that day's mail.
+        conditions.append("m.internal_date >= %(after)s::timestamptz")
+        params["after"] = parsed.after
+    if parsed.on is not None:
+        conditions.append(
+            "m.internal_date >= %(on)s::timestamptz"
+            " and m.internal_date < %(on)s::timestamptz + interval '1 day'"
+        )
+        params["on"] = parsed.on
+
+    if parsed.has_attachment:
+        conditions.append(
+            "exists (select 1 from attachments a where a.raw_sha256 = m.raw_sha256)"
+        )
+
+    where = " where " + " and ".join(conditions)
+
+    # Relevance ranks against the free-text query; with no free text there is
+    # nothing to rank, and the clause would reference a parameter that is not
+    # in `params`. Fall back to the default ordering.
+    order_by = SEARCH_SORTS[sort]
+    if "%(q)s" in order_by and not parsed.text:
+        order_by = SEARCH_SORTS[DEFAULT_SEARCH_SORT]
+
     raw_count = conn.execute(
-        "select count(*) from messages "
-        "where search_tsv @@ websearch_to_tsquery('english', %s)",
-        (query,),
+        f"select count(*) from messages m{where}", params
     ).fetchone()
     assert raw_count is not None
     total = int(_row(raw_count)[0])
 
     if total == 0:
-        return SearchResult(messages=[], total=0, query=query)
+        return SearchResult(messages=[], total=0, query=query, parsed=parsed)
+
+    # ts_headline needs a tsquery; with no free text there is nothing to
+    # highlight, so fall back to the same plain snippet the mailbox list uses.
+    snippet_sql = (
+        "ts_headline("
+        "  'english',"
+        "  coalesce(m.subject, '') || ' ' || coalesce(m.search_text, ''),"
+        "  websearch_to_tsquery('english', %(q)s),"
+        "  'MaxWords=40, MinWords=20, StartSel=[hl], StopSel=[/hl]'"
+        ")"
+        if parsed.text
+        else _SNIPPET_SQL
+    )
 
     raw_rows = conn.execute(
         "select"
@@ -290,23 +366,18 @@ def search(
         "  m.to_addrs,"
         "  m.internal_date,"
         "  m.thread_id,"
-        "  ts_headline("
-        "    'english',"
-        "    coalesce(m.subject, '') || ' ' || coalesce(m.search_text, ''),"
-        "    websearch_to_tsquery('english', %(q)s),"
-        "    'MaxWords=40, MinWords=20, StartSel=[hl], StopSel=[/hl]'"
-        "  ) as snippet,"
+        f" {snippet_sql} as snippet,"
         f" {_LABELS_SQL} as labels"
         " from messages m"
-        " where m.search_tsv @@ websearch_to_tsquery('english', %(q)s)"
-        f" order by {SEARCH_SORTS[sort]}"
+        f"{where}"
+        f" order by {order_by}"
         " limit %(limit)s offset %(offset)s",
-        {"q": query, "limit": limit, "offset": offset},
+        params,
     ).fetchall()
 
     messages = [_message_row(r) for r in (_row(rr) for rr in raw_rows)]
 
-    return SearchResult(messages=messages, total=total, query=query)
+    return SearchResult(messages=messages, total=total, query=query, parsed=parsed)
 
 
 def list_messages(

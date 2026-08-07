@@ -27,6 +27,14 @@
   </form>
   <div class="topbar-right">
     <span class="readonly-chip" title="This archive is immutable. Nothing here can send, delete, or modify mail.">read-only</span>
+    {# <details> rather than a scripted modal: it needs no JavaScript, works
+       with the keyboard for free, and cannot break if a script fails. #}
+    <details class="help">
+      <summary class="help-button" title="How to use this archive">?</summary>
+      <div class="help-panel">
+        {% include "_help.html" %}
+      </div>
+    </details>
   </div>
 </header>
 

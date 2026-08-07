@@ -3,6 +3,13 @@
 {% block content %}
 
 {% if query %}
+{% if parsed and parsed.rejected %}
+<p class="help-note search-warning">
+  Ignored {{ parsed.rejected|join(", ") }} — dates must look like
+  <code>2026-01-01</code>, and <code>is:</code> takes one of unread, read,
+  starred, important, sent, draft, spam, chat.
+</p>
+{% endif %}
 <div class="listbar">
   <span class="listbar-title">{{ "{:,}".format(total) }} result{{ 's' if total != 1 else '' }}</span>
   <span class="listbar-count">for &ldquo;{{ query }}&rdquo;</span>

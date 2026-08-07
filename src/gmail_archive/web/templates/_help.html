@@ -1,0 +1,118 @@
+{# Help panel. Kept in one partial so the top-bar popover and any future
+   standalone /help page stay in step. Everything documented here is
+   implemented — if an operator is listed, searchquery.py parses it and
+   query.search() acts on it. #}
+<h2 class="help-title">Searching</h2>
+
+<p class="help-lead">Type in the box at the top. Search covers the
+  <strong>subject and body text</strong> of every message; use the operators
+  below to search headers, dates and labels, which are not in the text index.</p>
+
+<table class="help-table">
+  <tr>
+    <th colspan="2" class="help-group">Who</th>
+  </tr>
+  <tr>
+    <td><code>from:amazon</code></td>
+    <td>Sender contains this. Partial matches work — <code>from:amazon</code>
+      finds <code>order-update@amazon.com</code>.</td>
+  </tr>
+  <tr>
+    <td><code>to:evan@example.com</code></td>
+    <td>Any recipient contains this.</td>
+  </tr>
+  <tr>
+    <td><code>from:"john smith"</code></td>
+    <td>Quote a value containing spaces.</td>
+  </tr>
+
+  <tr>
+    <th colspan="2" class="help-group">When</th>
+  </tr>
+  <tr>
+    <td><code>before:2026-01-01</code></td>
+    <td>Sent before this date, exclusive.</td>
+  </tr>
+  <tr>
+    <td><code>after:2020-06-01</code></td>
+    <td>Sent on or after this date, inclusive.</td>
+  </tr>
+  <tr>
+    <td><code>on:2026-07-30</code></td>
+    <td>One calendar day, in UTC. The date box in the list header does the
+      same thing with a calendar.</td>
+  </tr>
+
+  <tr>
+    <th colspan="2" class="help-group">What</th>
+  </tr>
+  <tr>
+    <td><code>subject:invoice</code></td>
+    <td>Subject line contains this.</td>
+  </tr>
+  <tr>
+    <td><code>label:"Bank Alerts"</code></td>
+    <td>Carries this Gmail label, matched exactly. See
+      <a href="/labels">all labels</a>.</td>
+  </tr>
+  <tr>
+    <td><code>has:attachment</code></td>
+    <td>Has at least one attachment.</td>
+  </tr>
+  <tr>
+    <td><code>is:unread</code> <code>is:starred</code></td>
+    <td>Gmail's own state, as it was when the export was taken. Also
+      <code>is:read</code>, <code>is:important</code>, <code>is:sent</code>,
+      <code>is:draft</code>, <code>is:spam</code>, <code>is:chat</code>.</td>
+  </tr>
+
+  <tr>
+    <th colspan="2" class="help-group">Text</th>
+  </tr>
+  <tr>
+    <td><code>"exact phrase"</code></td>
+    <td>Words adjacent, in order.</td>
+  </tr>
+  <tr>
+    <td><code>invoice -receipt</code></td>
+    <td>Has the first, not the second.</td>
+  </tr>
+  <tr>
+    <td><code>invoice or receipt</code></td>
+    <td>Either one. Plain words are joined with "and".</td>
+  </tr>
+</table>
+
+<p class="help-note">Operators combine, and free text can sit alongside them:
+  <code class="help-example">from:amazon has:attachment after:2025-01-01 refund</code></p>
+
+<h2 class="help-title">Worth knowing</h2>
+
+<ul class="help-list">
+  <li><strong>Words are stemmed.</strong> Searching <code>running</code> also
+    finds "run" and "runs". That is usually what you want, and occasionally
+    surprising.</li>
+  <li><strong>Dates are UTC.</strong> A message sent late in the evening local
+    time can land on the next day here.</li>
+  <li><strong>Results are newest first</strong> by default. Sort by relevance
+    from the links above the results — relevance is slower, because it has to
+    rank every match before it can pick the top ones.</li>
+  <li><strong>Links are defanged.</strong> Every URL in an archived message is
+    rewritten to <code>hxxp://</code> so nothing can load or be clicked by
+    accident. Nothing in this archive reaches the network.</li>
+  <li><strong>Nothing here can change your mail.</strong> The archive is
+    read-only: no sending, no deleting, no marking as read.</li>
+</ul>
+
+<h2 class="help-title">Getting around</h2>
+
+<ul class="help-list">
+  <li>The left rail is Gmail's own mailboxes and your top labels, with counts.
+    <strong>All Mail</strong> is everything.</li>
+  <li><strong>Unread, starred and important</strong> markers are Gmail's, as of
+    the export.</li>
+  <li>Inside a message: <strong>View raw text</strong> shows the original
+    RFC822 source, headers and all.</li>
+  <li><a href="/stats">Statistics</a> has archive-wide totals and the date
+    range.</li>
+</ul>
