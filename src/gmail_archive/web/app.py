@@ -6,6 +6,7 @@ nh3 for HTML sanitization, and CSP headers for defense-in-depth.
 
 from __future__ import annotations
 
+import hashlib
 import re
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -53,8 +54,33 @@ HERE = Path(__file__).parent
 #: wrong-length string, which would surface as a 500 rather than a 404.
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
 
+
+def _asset_version() -> str:
+    """A short fingerprint of the static assets, for cache-busting URLs.
+
+    Without this, `StaticFiles` sends no `Cache-Control`, so browsers apply
+    heuristic freshness and happily serve a cached stylesheet against freshly
+    deployed HTML. The failure mode is nasty because it is silent and partial:
+    new markup styled by old CSS, which looks like a layout bug rather than a
+    stale file.
+
+    Computed once at import from the files' size and mtime, so a rebuilt image
+    always produces a new URL and an unchanged one keeps its cache.
+    """
+    fingerprint = hashlib.sha256()
+    for name in sorted(("style.css", "htmx.min.js")):
+        path = HERE / "static" / name
+        if path.is_file():
+            stat = path.stat()
+            fingerprint.update(f"{name}:{stat.st_size}:{stat.st_mtime_ns}".encode())
+    return fingerprint.hexdigest()[:12]
+
+
+ASSET_VERSION = _asset_version()
+
 app = FastAPI(title="gmail-archive", docs_url="/docs")
 templates = Jinja2Templates(directory=str(HERE / "templates"))
+templates.env.globals["asset_version"] = ASSET_VERSION
 templates.env.filters["relative_date"] = relative_date
 templates.env.filters["gmail_date"] = gmail_date
 templates.env.filters["sender_name"] = sender_name
@@ -86,6 +112,16 @@ async def add_security_headers(request: Request, call_next: Any) -> Response:
         "frame-ancestors 'none'"
     )
     response.headers["X-Content-Type-Options"] = "nosniff"
+
+    # Static assets are served from versioned URLs (see `_asset_version`), so a
+    # versioned request can be cached hard — the URL changes when the file
+    # does. An unversioned request gets `no-cache`, which still allows a 304
+    # via the ETag but never lets a browser serve a stale copy without asking.
+    if request.url.path.startswith("/static/"):
+        if request.query_params.get("v"):
+            response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+        else:
+            response.headers["Cache-Control"] = "no-cache"
     return response
 
 

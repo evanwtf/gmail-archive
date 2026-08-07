@@ -366,3 +366,45 @@ class TestDayPickerScope:
 
     def test_default_front_door_is_still_the_inbox(self) -> None:
         assert self._resolve() == "Inbox"
+
+
+class TestAssetVersioning:
+    """Static URLs carry a fingerprint so a browser cannot pair new HTML with
+    a cached stylesheet — which renders as a layout bug, not a stale file."""
+
+    def test_rendered_pages_link_the_versioned_stylesheet(
+        self, client: TestClient
+    ) -> None:
+        from gmail_archive.web.app import ASSET_VERSION
+
+        # The 503 page extends base.html, so it exercises the real <head>
+        # without needing a database.
+        body = client.get("/", headers={"Accept": "text/html"}).text
+        assert f"/static/style.css?v={ASSET_VERSION}" in body
+        assert f"/static/htmx.min.js?v={ASSET_VERSION}" in body
+        assert '/static/style.css"' not in body  # never the unversioned URL
+
+    def test_versioned_static_is_cached_hard(self, client: TestClient) -> None:
+        from gmail_archive.web.app import ASSET_VERSION
+
+        response = client.get(f"/static/style.css?v={ASSET_VERSION}")
+        assert response.status_code == 200
+        assert "immutable" in response.headers["cache-control"]
+
+    def test_unversioned_static_must_revalidate(self, client: TestClient) -> None:
+        # Never let a browser serve this from cache without asking, or the
+        # next CSS change is invisible to anyone who loaded the old one.
+        response = client.get("/static/style.css")
+        assert response.status_code == 200
+        assert response.headers["cache-control"] == "no-cache"
+
+    def test_version_changes_when_the_stylesheet_does(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import gmail_archive.web.app as app_module
+
+        first = app_module._asset_version()
+        monkeypatch.setattr(app_module, "HERE", tmp_path)
+        (tmp_path / "static").mkdir()
+        (tmp_path / "static" / "style.css").write_text("body{}")
+        assert app_module._asset_version() != first

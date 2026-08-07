@@ -4,13 +4,13 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>{% block title %}gmail-archive{% endblock %}</title>
-  <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="/static/style.css?v={{ asset_version }}">
   {# Vendored, not from a CDN. This was a render-blocking cross-origin fetch
      on every page load, in an archive whose whole point is working offline —
      and it never even ran, because the integrity hash was truncated and so
      failed the SRI check. Local and same-origin: no third party, no SRI
      needed, no request to block on. `defer` so it cannot block parsing. #}
-  <script src="/static/htmx.min.js" defer></script>
+  <script src="/static/htmx.min.js?v={{ asset_version }}" defer></script>
   {% block extra_head %}{% endblock %}
 </head>
 <body>
