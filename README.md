@@ -139,10 +139,11 @@ uv run gmail-archive --help
 `uv run pre-commit install` is not optional housekeeping. This repository is
 public, and the hooks reject staged `.mbox` files, anything under `blobs/`, and
 oversized files. Without them there is nothing between a stray `git add .` and a
-permanent public commit of real mail. They also run `ruff`, `mypy --strict` and
-gitleaks; there is no CI
-([#20](https://github.com/evanwtf/gmail-archive/issues/20)), so the hooks are
-the only gate.
+permanent public commit of real mail. They also run `ruff`, `mypy --strict` and gitleaks.
+
+CI runs the same checks on every push, plus the integration suite against a
+real Postgres — those 41 tests skip silently without a database URL, so
+before CI they ran nowhere.
 
 ```bash
 uv run pytest                 # unit tests; no database needed

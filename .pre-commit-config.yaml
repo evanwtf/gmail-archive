@@ -1,5 +1,7 @@
-# Run `uv run pre-commit install` after cloning. There is no CI on this
-# repository, so these hooks are the entire safety net.
+# Run `uv run pre-commit install` after cloning. CI runs the same checks
+# (.github/workflows/ci.yml), but these catch them before the push — and the
+# mail-data guard has to run here, because by the time CI sees a commit the
+# mail is already in the history.
 repos:
   - repo: local
     hooks:

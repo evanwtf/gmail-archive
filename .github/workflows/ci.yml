@@ -1,0 +1,88 @@
+# There is no CI on this repository, and the pre-commit hooks are the entire
+# safety net — which is only true on a machine where someone ran
+# `pre-commit install`. On the machine this was written, nobody had, and `main`
+# had been carrying unformatted files for weeks. See #20.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  # A newer push makes an in-flight run irrelevant.
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    # Self-hosted: this repository is in the evanwtf org, which has a Linux
+    # x64 runner. Labels are case-sensitive and must match exactly.
+    runs-on: [self-hosted, Linux, X64]
+
+    services:
+      postgres:
+        # Pinned to the same major the stack runs, so the integration tests
+        # exercise the version the archive actually lives on.
+        image: postgres:18
+        env:
+          POSTGRES_USER: gmail_archive
+          POSTGRES_PASSWORD: ci
+          POSTGRES_DB: gmail_archive_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U gmail_archive -d gmail_archive_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      # The 41 integration tests skip silently without this, which means they
+      # run nowhere. Setting it here is most of the point of having CI.
+      GMAIL_ARCHIVE_TEST_DATABASE_URL: postgresql://gmail_archive:ci@localhost:5432/gmail_archive_test
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Sync dependencies
+        run: uv sync --frozen
+
+      - name: Lint
+        run: uv run ruff check .
+
+      - name: Format
+        # --check, not a rewrite: CI reports, it does not edit.
+        run: uv run ruff format --check .
+
+      - name: Type check
+        run: uv run mypy
+
+      - name: Unit tests
+        run: uv run pytest -q
+
+      - name: Apply schema
+        run: uv run gmail-archive migrate
+        env:
+          GMAIL_ARCHIVE_DATABASE_URL: postgresql://gmail_archive:ci@localhost:5432/gmail_archive_test
+
+      - name: Integration tests
+        run: uv run pytest -m integration -q
+
+  # A separate job so a broken Dockerfile is distinguishable at a glance from
+  # a broken test, and so it can run in parallel with the suite.
+  image:
+    runs-on: [self-hosted, Linux, X64]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the runtime image
+        run: docker compose build web
+        env:
+          # Only needed to satisfy interpolation; nothing is started.
+          POSTGRES_PASSWORD: unused
