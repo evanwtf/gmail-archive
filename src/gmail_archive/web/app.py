@@ -8,6 +8,9 @@ from __future__ import annotations
 
 import hashlib
 import re
+import threading
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -18,6 +21,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from psycopg_pool import ConnectionPool, PoolTimeout
 
 from gmail_archive.analytics import (
     correspondent,
@@ -91,7 +95,21 @@ def _asset_version() -> str:
 
 ASSET_VERSION = _asset_version()
 
-app = FastAPI(title="gmail-archive", docs_url="/docs")
+
+@asynccontextmanager
+async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    """Return the pool's connections on shutdown.
+
+    Startup is deliberately not here: the pool is created lazily on first use,
+    because `TestClient(app)` outside a `with` block never runs lifespan, and
+    because the environment has to be read at request time for tests that
+    monkeypatch it.
+    """
+    yield
+    _close_pool()
+
+
+app = FastAPI(title="gmail-archive", docs_url="/docs", lifespan=_lifespan)
 templates = Jinja2Templates(directory=str(HERE / "templates"))
 templates.env.globals["asset_version"] = ASSET_VERSION
 templates.env.filters["relative_date"] = relative_date
@@ -142,10 +160,68 @@ async def add_security_headers(request: Request, call_next: Any) -> Response:
 # ── Helpers ───────────────────────────────────────────────────────
 
 
-def _get_conn() -> psycopg.Connection[object]:
-    """Open a database connection from environment settings."""
+#: The pool, created on first use rather than at import or in a lifespan hook.
+#: Lazily, because `Settings.from_env()` must be read at request time for the
+#: tests that monkeypatch the environment, and because `TestClient(app)` used
+#: without a `with` block never runs lifespan at all.
+_pool: ConnectionPool | None = None
+_pool_lock = threading.Lock()
+
+#: What a route treats as "the database is unavailable". `PoolTimeout` is not a
+#: `psycopg.Error`, so without naming it here an exhausted or unreachable pool
+#: would surface as a 500 rather than the 503 every route already handles.
+DB_ERRORS: tuple[type[BaseException], ...] = (psycopg.Error, PoolTimeout)
+
+
+def _get_pool() -> ConnectionPool:
+    """The process-wide connection pool.
+
+    Every route used to call `psycopg.connect()` and throw the connection away
+    — about 10ms of TCP and backend fork on every page view, and one Postgres
+    backend per concurrent request, which makes `max_connections` the
+    concurrency limit for the UI. The IMAP backend has always pooled; the web
+    app was the odd one out.
+    """
+    global _pool
+    if _pool is None:
+        with _pool_lock:
+            if _pool is None:
+                settings = Settings.from_env()
+                _pool = ConnectionPool(
+                    settings.database_url,
+                    min_size=1,
+                    max_size=8,
+                    # Fail a request rather than hanging it when the database
+                    # is down: the routes render a 503 and the page still
+                    # loads.
+                    timeout=5.0,
+                    open=True,
+                )
+    return _pool
+
+
+def _get_conn() -> Any:
+    """A pooled connection, as a context manager.
+
+    Returned rather than yielded so callers keep the existing
+    `with _get_conn() as conn:` shape; the pool returns the connection on exit
+    instead of closing it.
+    """
     settings = Settings.from_env()
-    return psycopg.connect(settings.database_url)
+    if not settings.database_url:
+        # Short-circuit rather than letting the pool spend its timeout finding
+        # out there is nowhere to connect to. Keeps an unconfigured instance
+        # responsive, and keeps the unit suite fast.
+        raise psycopg.OperationalError("GMAIL_ARCHIVE_DATABASE_URL is not set")
+    return _get_pool().connection()
+
+
+def _close_pool() -> None:
+    """Return the pool's connections on the way out."""
+    global _pool
+    if _pool is not None:
+        _pool.close()
+        _pool = None
 
 
 def _get_store() -> BlobStore:
@@ -289,7 +365,7 @@ def index(
             )
             context = _chrome(conn)
             earliest, latest = date_bounds(conn)
-    except psycopg.Error:
+    except DB_ERRORS:
         return templates.TemplateResponse(
             request,
             "error.html",
@@ -368,7 +444,7 @@ def people_page(request: Request, kind: str = "human") -> HTMLResponse:
             recipients = top_recipients(conn, limit=40)
             faded = lost_touch(conn, limit=20)
             context = _chrome(conn)
-    except psycopg.Error:
+    except DB_ERRORS:
         return templates.TemplateResponse(
             request,
             "error.html",
@@ -397,7 +473,7 @@ def correspondent_page(request: Request, address: str) -> HTMLResponse:
             profile = correspondent(conn, address)
             years = correspondent_years(conn, address) if profile else []
             context = _chrome(conn)
-    except psycopg.Error:
+    except DB_ERRORS:
         return templates.TemplateResponse(
             request,
             "error.html",
@@ -419,7 +495,7 @@ def trends_page(request: Request) -> HTMLResponse:
         with _get_conn() as conn:
             years = yearly_activity(conn)
             context = _chrome(conn)
-    except psycopg.Error:
+    except DB_ERRORS:
         return templates.TemplateResponse(
             request,
             "error.html",
@@ -446,7 +522,7 @@ def stats_page(request: Request) -> HTMLResponse:
             s = stats(conn)
             db = database_stats(conn)
             context = _chrome(conn)
-    except psycopg.Error:
+    except DB_ERRORS:
         return templates.TemplateResponse(
             request,
             "error.html",
@@ -465,7 +541,7 @@ def message_detail(request: Request, sha256: str) -> HTMLResponse:
         with _get_conn() as conn:
             msg = get_message_full(conn, sha256)
             context = _chrome(conn)
-    except psycopg.Error:
+    except DB_ERRORS:
         return templates.TemplateResponse(
             request,
             "error.html",
@@ -492,7 +568,7 @@ def thread_view(request: Request, thread_id: str) -> HTMLResponse:
         with _get_conn() as conn:
             msgs = get_thread_messages(conn, thread_id)
             context = _chrome(conn)
-    except psycopg.Error:
+    except DB_ERRORS:
         return templates.TemplateResponse(
             request,
             "error.html",
@@ -525,7 +601,7 @@ def search_page(
         with _get_conn() as conn:
             result = search(conn, q, limit=limit, offset=offset, sort=sort)
             context = _chrome(conn)
-    except psycopg.Error:
+    except DB_ERRORS:
         return templates.TemplateResponse(
             request,
             "error.html",
@@ -554,7 +630,7 @@ def labels_page(request: Request) -> HTMLResponse:
         with _get_conn() as conn:
             labels = list_labels(conn)
             context = _chrome(conn)
-    except psycopg.Error:
+    except DB_ERRORS:
         return templates.TemplateResponse(
             request,
             "error.html",
@@ -604,7 +680,7 @@ def raw_message_view(request: Request, sha256: str) -> HTMLResponse:
             msg = get_message(conn, sha256)
             subject = msg.subject if msg else None
             context = _chrome(conn)
-    except psycopg.Error:
+    except DB_ERRORS:
         # The blob is the point of this page; the subject and the surrounding
         # rail are only decoration, and the page is still worth serving.
         pass
