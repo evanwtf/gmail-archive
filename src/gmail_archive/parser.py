@@ -138,6 +138,25 @@ def requote_mbox(raw: bytes) -> bytes:
     return re.sub(rb"(?m)^(>*)(From )", lambda m: b">" + m.group(1) + m.group(2), raw)
 
 
+def strip_unstorable(value: str) -> str:
+    """Remove what Postgres `text` and `jsonb` cannot hold.
+
+    NUL and lone surrogates. Public because this hazard is not confined to
+    parsing: `imap-backfill` builds envelope JSON straight from pymap and hit
+    exactly the same wall 194,000 messages into a run —
+
+        UntranslatableCharacter: \u0000 cannot be converted to text
+
+    — on a subject line containing a NUL. Anything assembling a value bound
+    for Postgres from message content has to come through here.
+    """
+    if "\x00" in value:
+        value = value.replace("\x00", "")
+    if _SURROGATES.search(value):
+        value = _SURROGATES.sub("", value)
+    return value
+
+
 def _sanitize(text: str, warnings: list[ParseWarning]) -> str:
     """Strip what Postgres `text` cannot store. Order matters: NUL first."""
     if "\x00" in text:

@@ -18,6 +18,7 @@ from gmail_archive.config import Settings
 from gmail_archive.fixtures import MEASURED_RATES as _MEASURED
 from gmail_archive.fixtures import Pathology, generate
 from gmail_archive.logging_setup import configure
+from gmail_archive.parser import strip_unstorable
 from gmail_archive.version import build_info
 
 logger = logging.getLogger(__name__)
@@ -576,8 +577,8 @@ def imap_backfill() -> None:
                 continue
 
             content = MessageContent.parse(raw_bytes)
-            envelope = _json.dumps(_envelope_to_dict(content))
-            bodystructure = _json.dumps(_bodystructure_to_dict(content))
+            envelope = _json.dumps(_scrub(_envelope_to_dict(content)))
+            bodystructure = _json.dumps(_scrub(_bodystructure_to_dict(content)))
 
             conn.execute(
                 "UPDATE messages SET envelope = %s::jsonb,"
@@ -658,6 +659,23 @@ def imap_backfill() -> None:
             click.echo(f"  Folder '{folder_name}': {assigned} new UIDs")
 
     click.echo("Backfill complete.")
+
+
+def _scrub(value: Any) -> Any:
+    """Recursively strip NUL and lone surrogates from a decoded structure.
+
+    pymap's MIME parser returns whatever the message contained, and a real
+    export contains subjects with embedded NULs. `json.dumps` happily encodes
+    one as `\u0000`, and Postgres then rejects the whole jsonb value —
+    which killed a backfill 194,000 messages in.
+    """
+    if isinstance(value, str):
+        return strip_unstorable(value)
+    if isinstance(value, dict):
+        return {k: _scrub(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_scrub(v) for v in value]
+    return value
 
 
 def _envelope_to_dict(content: Any) -> dict[str, Any]:

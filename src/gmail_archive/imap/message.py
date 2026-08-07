@@ -7,12 +7,17 @@ responses, with envelope and bodystructure cached in the database after backfill
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterable
 from datetime import datetime
 
 from pymap.message import BaseLoadedMessage, BaseMessage
 from pymap.mime import MessageContent
 from pymap.parsing.specials import FetchRequirement, Flag, ObjectId
+
+from gmail_archive.storage import BlobStore
+
+logger = logging.getLogger(__name__)
 
 __all__ = ["LoadedMessage", "Message"]
 
@@ -25,7 +30,7 @@ class Message(BaseMessage):
     ``load_content()`` is called.
     """
 
-    __slots__ = ["_raw_bytes", "_recent"]
+    __slots__ = ["_raw_bytes", "_raw_sha256", "_recent", "_store"]
 
     def __init__(
         self,
@@ -38,6 +43,8 @@ class Message(BaseMessage):
         thread_id: ObjectId | None = None,
         recent: bool = False,
         raw_bytes: bytes | None = None,
+        raw_sha256: str | None = None,
+        store: BlobStore | None = None,
     ) -> None:
         super().__init__(
             uid,
@@ -48,6 +55,8 @@ class Message(BaseMessage):
             thread_id=thread_id,
         )
         self._raw_bytes = raw_bytes
+        self._raw_sha256 = raw_sha256
+        self._store = store
         self._recent = recent
 
     @classmethod
@@ -70,6 +79,8 @@ class Message(BaseMessage):
             thread_id=msg.thread_id,
             recent=recent,
             raw_bytes=msg._raw_bytes,
+            raw_sha256=msg._raw_sha256,
+            store=msg._store,
         )
 
     @property
@@ -81,9 +92,26 @@ class Message(BaseMessage):
         self._recent = recent
 
     async def load_content(self, requirement: FetchRequirement) -> LoadedMessage:
-        content: MessageContent | None = None
-        if self._raw_bytes is not None:
-            content = MessageContent.parse(self._raw_bytes)
+        """Parse the message, reading it from the blob store if needed.
+
+        This is the lazy loading the class docstring has always described and
+        never did: `_raw_bytes` was only ever set if a caller passed it in,
+        and nothing did, so every FETCH returned `RFC822.SIZE 0` and an empty
+        body. Holding 277k messages in memory is not an option, so the bytes
+        are read per FETCH — the blob store is a content-addressed file read,
+        which is about as cheap as that gets.
+        """
+        raw = self._raw_bytes
+        if raw is None and self._store is not None and self._raw_sha256:
+            try:
+                raw = self._store.get(self._raw_sha256)
+            except OSError:
+                # A missing blob is a real possibility on a damaged archive
+                # (`verify` reports them). An empty body beats killing the
+                # client's whole FETCH.
+                logger.warning("blob missing for %s", self._raw_sha256)
+                raw = None
+        content = MessageContent.parse(raw) if raw is not None else None
         return LoadedMessage(self, requirement, content)
 
 

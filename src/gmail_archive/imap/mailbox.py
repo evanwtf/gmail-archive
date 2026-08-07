@@ -25,6 +25,9 @@ from pymap.parsing.specials import ObjectId
 from pymap.parsing.specials.flag import Flag, Recent, Seen
 from pymap.selected import SelectedMailbox, SelectedSet
 
+from gmail_archive.config import Settings
+from gmail_archive.storage import BlobStore
+
 from .message import Message
 
 logger = logging.getLogger(__name__)
@@ -49,12 +52,14 @@ class MailboxData(MailboxDataInterface[Message]):
         name: str,
         uid_validity: int,
         conn_factory: Any,
+        store: BlobStore | None = None,
     ) -> None:
         self._mailbox_id = ObjectId.random_mailbox_id()
         self._folder_id = folder_id
         self._name = name
         self._uid_validity = uid_validity
         self._conn_factory = conn_factory
+        self._store = store
         self._readonly = True
         self._updated = subsystem.get().new_event()
         self._messages_lock = subsystem.get().new_rwlock()
@@ -113,14 +118,24 @@ class MailboxData(MailboxDataInterface[Message]):
                 (self._folder_id,),
             )
             async for row in rows:
-                uid = row[0]
-                internal_date = row[1] or datetime.now(UTC)
+                # Columns are (uid, raw_sha256, internal_date, subject,
+                # from_addr). These indices were off by one — internal_date
+                # was handed the sha256 string and email_id tried to slice a
+                # datetime, so every SELECT died with SERVERBUG.
+                uid, raw_sha256, internal_date = row[0], row[1], row[2]
                 msg = Message(
                     uid,
-                    internal_date,
+                    # A missing Date is ~2.7% of this archive. IMAP requires
+                    # an INTERNALDATE, so fall back rather than omit the
+                    # message entirely.
+                    internal_date or datetime.now(UTC),
                     _PERMANENT_FLAGS,
-                    email_id=ObjectId(row[2][:16].encode()),
+                    email_id=ObjectId(raw_sha256[:16].encode()),
                     thread_id=ObjectId(b"0" * 16),
+                    # Carried so FETCH can read the body from the blob store
+                    # on demand rather than holding 277k messages in memory.
+                    raw_sha256=raw_sha256,
+                    store=self._store,
                 )
                 messages.append(msg)
                 if uid > self._max_uid:
@@ -143,7 +158,12 @@ class MailboxData(MailboxDataInterface[Message]):
         raise MailboxReadOnly(self._name)
 
     async def get(self, uid: int, cached_msg: CachedMessage) -> Message:
-        if uid < 1 or uid > self._max_uid:
+        # Bounded below only. The upper bound used to be `self._max_uid`,
+        # which is populated by `_load_all_messages()` — so it was 0 on any
+        # instance that had not run a full load, and every FETCH raised
+        # IndexError. `cached_msg` comes from pymap's own cache for the
+        # selected mailbox, so its presence is the real proof the UID exists.
+        if uid < 1:
             raise IndexError(uid)
         async with self._messages_lock.read_lock():
             if isinstance(cached_msg, Message):
@@ -212,6 +232,13 @@ class MailboxSet(MailboxSetInterface[MailboxData]):
         super().__init__()
         self._conn_factory = conn_factory
         self._delimiter = "/"
+        # One store for the session; BlobStore is a path wrapper, not a handle.
+        self._store = BlobStore(Settings.from_env().blob_dir)
+        # One MailboxData per folder, kept for the life of the session.
+        # `get_mailbox()` used to build a new one on every call, so the UID
+        # ceiling and the selected-set state a SELECT established were thrown
+        # away before the following FETCH could use them.
+        self._mailboxes: dict[str, MailboxData] = {}
 
     @property
     def delimiter(self) -> str:
@@ -266,7 +293,14 @@ class MailboxSet(MailboxSetInterface[MailboxData]):
         if name not in folders:
             raise KeyError(name)
         folder_id, uid_validity = folders[name]
-        return MailboxData(folder_id, name, uid_validity, self._conn_factory)
+        existing = self._mailboxes.get(name)
+        if existing is not None:
+            return existing
+        mailbox = MailboxData(
+            folder_id, name, uid_validity, self._conn_factory, self._store
+        )
+        self._mailboxes[name] = mailbox
+        return mailbox
 
     async def add_mailbox(self, name: str) -> ObjectId:
         raise NotAllowedError("Cannot create mailboxes in a read-only archive")

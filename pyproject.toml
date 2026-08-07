@@ -1,6 +1,6 @@
 [project]
 name = "gmail-archive"
-version = "0.1.2"
+version = "0.1.3"
 description = "Ingest a Google Takeout Gmail mbox export into Postgres for permanent local archival, search, and export"
 readme = "README.md"
 license = "MIT"

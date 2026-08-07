@@ -432,3 +432,47 @@ class TestAttachmentExtraction:
 
         assert list(iter_attachment_payloads(b"")) == []
         assert list(iter_attachment_payloads(b"\xff\xfe not a message")) == []
+
+
+class TestStripUnstorable:
+    """Postgres cannot hold NUL or lone surrogates, in text or in jsonb.
+
+    Public because the hazard is not confined to parsing: `imap-backfill`
+    builds envelope JSON from pymap's output and died 194,000 messages into a
+    run on a subject containing a NUL, with
+    `UntranslatableCharacter: \\u0000 cannot be converted to text`.
+    """
+
+    def test_nul_is_removed(self) -> None:
+        from gmail_archive.parser import strip_unstorable
+
+        assert strip_unstorable("Delivery Tomorrow\x00 ok") == "Delivery Tomorrow ok"
+
+    def test_lone_surrogates_are_removed(self) -> None:
+        from gmail_archive.parser import strip_unstorable
+
+        assert "\ud800" not in strip_unstorable("lone \ud800 surrogate")
+
+    def test_ordinary_text_is_untouched(self) -> None:
+        from gmail_archive.parser import strip_unstorable
+
+        for text in ("plain", "emoji", "", "tabs\tand\nnewlines"):
+            assert strip_unstorable(text) == text
+
+    def test_json_round_trips_after_scrubbing(self) -> None:
+        # The actual failure: json.dumps encodes a NUL as an escape quite
+        # happily, and Postgres then rejects the resulting jsonb.
+        import json
+
+        from gmail_archive.parser import strip_unstorable
+
+        assert "u0000" not in json.dumps(strip_unstorable("subject\x00here"))
+
+    def test_scrub_reaches_nested_structures(self) -> None:
+        # The backfill builds a nested dict of envelope and bodystructure;
+        # a NUL anywhere in it poisons the whole jsonb value.
+        from gmail_archive.cli import _scrub
+
+        dirty = {"subject": "a\x00b", "to": [{"name": "c\x00d"}], "n": 5}
+        clean = _scrub(dirty)
+        assert clean == {"subject": "ab", "to": [{"name": "cd"}], "n": 5}

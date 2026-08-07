@@ -143,3 +143,73 @@ class TestServerArguments:
         # these; a missing one is an AttributeError at startup, not a type
         # error at import, so only an actual construction catches it.
         assert hasattr(self._namespace(), field), field
+
+
+class TestMessageContent:
+    """FETCH reads the body from the blob store on demand.
+
+    The class docstring always claimed lazy loading from the blob store; the
+    code only ever used bytes handed to the constructor, and nothing handed it
+    any. Every FETCH returned `RFC822.SIZE 0` and an empty body.
+    """
+
+    RAW = b"Subject: hello\r\nFrom: a@example.com\r\n\r\nbody text\r\n"
+
+    def _message(self, tmp_path: object) -> object:
+        from datetime import UTC, datetime
+        from pathlib import Path
+
+        from gmail_archive.imap.message import Message
+        from gmail_archive.storage import BlobStore
+
+        store = BlobStore(Path(str(tmp_path)))
+        sha = store.put(self.RAW).sha256
+        return Message(
+            1,
+            datetime.now(UTC),
+            frozenset(),
+            raw_sha256=sha,
+            store=store,
+        )
+
+    @pytest.mark.asyncio
+    async def test_content_is_read_from_the_blob_store(self, tmp_path: object) -> None:
+        from pymap.parsing.specials import FetchRequirement
+
+        msg = self._message(tmp_path)
+        loaded = await msg.load_content(FetchRequirement.CONTENT)  # type: ignore[attr-defined]
+        assert loaded.get_header(b"subject")  # non-empty
+
+    @pytest.mark.asyncio
+    async def test_a_missing_blob_does_not_kill_the_fetch(
+        self, tmp_path: object
+    ) -> None:
+        # `verify` reports missing blobs as a real condition on a damaged
+        # archive; an empty body beats aborting the client's whole FETCH.
+        from datetime import UTC, datetime
+        from pathlib import Path
+
+        from pymap.parsing.specials import FetchRequirement
+
+        from gmail_archive.imap.message import Message
+        from gmail_archive.storage import BlobStore
+
+        msg = Message(
+            1,
+            datetime.now(UTC),
+            frozenset(),
+            raw_sha256="0" * 64,
+            store=BlobStore(Path(str(tmp_path))),
+        )
+        loaded = await msg.load_content(FetchRequirement.CONTENT)
+        assert loaded is not None
+
+    def test_copy_carries_the_store_and_hash(self, tmp_path: object) -> None:
+        # pymap copies messages around; losing the loader would silently
+        # reintroduce the empty-body bug.
+        from gmail_archive.imap.message import Message
+
+        original = self._message(tmp_path)
+        duplicate = Message.copy(original)  # type: ignore[arg-type]
+        assert duplicate._raw_sha256 == original._raw_sha256  # type: ignore[attr-defined]
+        assert duplicate._store is original._store  # type: ignore[attr-defined]
