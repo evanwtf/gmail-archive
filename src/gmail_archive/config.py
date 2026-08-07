@@ -27,6 +27,10 @@ class Settings:
     batch_size: int
     log_level: str
     imap_password: str
+    #: scrypt hash of the web UI password, from `gmail-archive set-password`.
+    #: Empty means the UI is unauthenticated — which the app warns about
+    #: loudly, because compose publishes it on 0.0.0.0.
+    web_password_hash: str
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -39,4 +43,5 @@ class Settings:
             batch_size=_int_env("GMAIL_ARCHIVE_BATCH_SIZE", 1000),
             log_level=os.environ.get("GMAIL_ARCHIVE_LOG_LEVEL", "INFO"),
             imap_password=os.environ.get("GMAIL_ARCHIVE_IMAP_PASSWORD", ""),
+            web_password_hash=os.environ.get("GMAIL_ARCHIVE_WEB_PASSWORD_HASH", ""),
         )

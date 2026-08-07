@@ -36,6 +36,10 @@ services:
       GMAIL_ARCHIVE_BUILD_TIME: ${GMAIL_ARCHIVE_BUILD_TIME:-}
       GMAIL_ARCHIVE_BLOB_DIR: /blobs
       GMAIL_ARCHIVE_LOG_LEVEL: ${GMAIL_ARCHIVE_LOG_LEVEL:-INFO}
+      # scrypt hash from `gmail-archive set-password`. Empty means the UI is
+      # served with no authentication at all — which matters here, because the
+      # port below is published on every interface.
+      GMAIL_ARCHIVE_WEB_PASSWORD_HASH: ${GMAIL_ARCHIVE_WEB_PASSWORD_HASH:-}
       # Built from POSTGRES_PASSWORD; the app reaches the server as
       # `postgres:5432` over the compose network.
       GMAIL_ARCHIVE_DATABASE_URL: postgresql://gmail_archive:${POSTGRES_PASSWORD:-}@postgres:5432/gmail_archive

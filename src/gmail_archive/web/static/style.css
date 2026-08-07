@@ -650,3 +650,69 @@ a { color: inherit; text-decoration: none; }
 @media (max-width: 900px) {
   .topnav-item { padding: 8px 10px; font-size: 13px; }
 }
+
+/* ── Login ────────────────────────────────────────────────────── */
+.login-body {
+  display: grid;
+  place-items: center;
+  min-height: 100vh;
+  background: var(--bg);
+  overflow: auto;
+}
+
+.login-card {
+  width: min(380px, calc(100vw - 32px));
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 36px 32px 32px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  box-shadow: 0 2px 12px rgba(32,33,36,.12);
+}
+
+.login-brand { display: flex; align-items: center; gap: 10px; justify-content: center; }
+.login-lead { text-align: center; color: var(--text-dim); font-size: 14px; }
+
+.login-input {
+  font: inherit;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+}
+.login-input:focus { outline: none; border-color: #1a73e8; }
+
+.login-button {
+  font: inherit;
+  font-weight: 700;
+  padding: 12px;
+  border: 0;
+  border-radius: 999px;
+  background: #1a73e8;
+  color: #fff;
+  cursor: pointer;
+}
+.login-button:hover { background: #1765cc; }
+
+.login-error {
+  padding: 9px 12px;
+  border-radius: 8px;
+  background: var(--accent-soft);
+  color: #b31412;
+  font-size: 13px;
+  text-align: center;
+}
+
+/* Shown in the header when no password is configured. */
+.auth-warning {
+  background: #b31412;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 4px 10px;
+  border-radius: 999px;
+  white-space: nowrap;
+}

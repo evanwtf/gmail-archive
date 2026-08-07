@@ -169,6 +169,32 @@ def ingest(mbox: Path, workers: int | None, batch_size: int | None) -> None:
     )
 
 
+@main.command("set-password")
+@click.option(
+    "--password",
+    prompt=True,
+    hide_input=True,
+    confirmation_prompt=True,
+    help="Prompted for if omitted, so it never lands in shell history.",
+)
+def set_password(password: str) -> None:
+    """Hash a password for the web UI and print the line to add to .env.
+
+    The hash is printed, never the password, and the prompt is hidden — so
+    neither reaches shell history or a terminal scrollback. Changing the
+    password invalidates every existing session, because the cookie signing
+    key is derived from the hash.
+    """
+    from gmail_archive.web.auth import hash_password
+
+    if len(password) < 8:
+        click.echo("Use at least 8 characters.", err=True)
+        raise click.Abort()
+
+    click.echo("\nAdd this line to .env, then restart the web container:\n")
+    click.echo(f"GMAIL_ARCHIVE_WEB_PASSWORD_HASH={hash_password(password)}\n")
+
+
 @main.command()
 def analyze() -> None:
     """Classify senders as human correspondence or automated mail.

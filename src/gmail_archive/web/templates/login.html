@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sign in — gmail-archive</title>
+  <link rel="stylesheet" href="/static/style.css?v={{ asset_version }}">
+</head>
+<body class="login-body">
+  <form class="login-card" method="post" action="/login">
+    <div class="login-brand">
+      <span class="brand-mark">M</span>
+      <span class="brand-name">archive</span>
+    </div>
+    <p class="login-lead">This archive is private.</p>
+
+    {% if error %}<p class="login-error">{{ error }}</p>{% endif %}
+
+    <input type="hidden" name="next" value="{{ next }}">
+    <input class="login-input" type="password" name="password"
+           placeholder="Password" autocomplete="current-password"
+           autofocus required aria-label="Password">
+    <button class="login-button" type="submit">Sign in</button>
+  </form>
+</body>
+</html>

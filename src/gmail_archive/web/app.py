@@ -7,6 +7,7 @@ nh3 for HTML sanitization, and CSP headers for defense-in-depth.
 from __future__ import annotations
 
 import hashlib
+import logging
 import re
 import threading
 from collections.abc import AsyncIterator
@@ -14,11 +15,17 @@ from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qs, quote
 
 import nh3
 import psycopg
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse, Response
+from fastapi.responses import (
+    HTMLResponse,
+    JSONResponse,
+    RedirectResponse,
+    Response,
+)
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from psycopg_pool import ConnectionPool, PoolTimeout
@@ -55,6 +62,14 @@ from gmail_archive.query import (
 )
 from gmail_archive.storage import BlobStore
 from gmail_archive.version import build_info
+from gmail_archive.web.auth import (
+    SESSION_COOKIE,
+    SESSION_MAX_AGE,
+    LoginThrottle,
+    issue_session,
+    verify_password,
+    verify_session,
+)
 from gmail_archive.web.filters import (
     defang,
     filesize,
@@ -63,6 +78,8 @@ from gmail_archive.web.filters import (
     relative_date,
     sender_name,
 )
+
+logger = logging.getLogger(__name__)
 
 HERE = Path(__file__).parent
 
@@ -119,6 +136,134 @@ templates.env.filters["defang"] = defang
 templates.env.filters["filesize"] = filesize
 templates.env.filters["highlight_snippet"] = highlight_snippet
 app.mount("/static", StaticFiles(directory=str(HERE / "static")), name="static")
+
+
+# ── Authentication ─────────────────────────────────────────────────
+
+#: Paths served without a session. An allowlist, not a blocklist, because
+#: routes keep being added — /people, /trends and the attachment route all
+#: appeared in one week — and a blocklist leaks each new one until someone
+#: remembers. Everything not named here requires authentication.
+_PUBLIC_PATHS = frozenset({"/login", "/logout", "/healthz"})
+_PUBLIC_PREFIXES = ("/static/",)
+
+_throttle = LoginThrottle()
+
+
+def _is_public(path: str) -> bool:
+    return path in _PUBLIC_PATHS or path.startswith(_PUBLIC_PREFIXES)
+
+
+def _client_id(request: Request) -> str:
+    return request.client.host if request.client else "unknown"
+
+
+@app.middleware("http")
+async def require_authentication(request: Request, call_next: Any) -> Response:
+    """Deny by default.
+
+    With no password configured the archive is served open, as it always has
+    been — refusing to start would break a running deployment on upgrade. It
+    says so loudly in the log and in the UI instead.
+    """
+    settings = Settings.from_env()
+    password_hash = settings.web_password_hash
+
+    if not password_hash or _is_public(request.url.path):
+        response: Response = await call_next(request)
+        return response
+
+    if verify_session(request.cookies.get(SESSION_COOKIE), password_hash):
+        authorised: Response = await call_next(request)
+        return authorised
+
+    # Send a browser to the login page, but give anything else a bare 401 —
+    # a redirect to HTML is a confusing answer to a scripted request.
+    accepts_html = "text/html" in request.headers.get("accept", "")
+    if accepts_html:
+        target = request.url.path
+        if request.url.query:
+            target = f"{target}?{request.url.query}"
+        return RedirectResponse(
+            f"/login?next={quote(target, safe='')}", status_code=303
+        )
+    return JSONResponse({"detail": "Authentication required"}, status_code=401)
+
+
+@app.get("/login", response_class=HTMLResponse)
+def login_form(request: Request, next: str = "/") -> HTMLResponse:
+    if not Settings.from_env().web_password_hash:
+        return RedirectResponse("/", status_code=303)  # type: ignore[return-value]
+    return templates.TemplateResponse(request, "login.html", {"next": _safe_next(next)})
+
+
+@app.post("/login", response_class=HTMLResponse)
+async def login_submit(request: Request) -> Response:
+    settings = Settings.from_env()
+    password_hash = settings.web_password_hash
+    if not password_hash:
+        return RedirectResponse("/", status_code=303)
+
+    # Parsed by hand rather than with `request.form()`, which needs
+    # python-multipart. The login form is two urlencoded fields; a dependency
+    # for that is not worth it in a project this deliberate about its
+    # dependency surface.
+    fields = parse_qs((await request.body()).decode("utf-8", errors="replace"))
+    password = fields.get("password", [""])[0]
+    target = _safe_next(fields.get("next", ["/"])[0])
+    client = _client_id(request)
+
+    wait = _throttle.locked_for(client)
+    if wait > 0:
+        return templates.TemplateResponse(
+            request,
+            "login.html",
+            {"next": target, "error": f"Too many attempts. Wait {int(wait) + 1}s."},
+            status_code=429,
+        )
+
+    if not verify_password(password, password_hash):
+        _throttle.record_failure(client)
+        logger.warning("failed web login from %s", client)
+        return templates.TemplateResponse(
+            request,
+            "login.html",
+            {"next": target, "error": "Incorrect password."},
+            status_code=401,
+        )
+
+    _throttle.record_success(client)
+    response = RedirectResponse(target, status_code=303)
+    response.set_cookie(
+        SESSION_COOKIE,
+        issue_session(password_hash),
+        max_age=SESSION_MAX_AGE,
+        httponly=True,
+        samesite="lax",
+        # Only when the request arrived over TLS. Setting it unconditionally
+        # would make the cookie unusable on the plain-HTTP LAN setup this
+        # normally runs as, and the browser would silently drop it.
+        secure=request.url.scheme == "https",
+    )
+    return response
+
+
+@app.get("/logout")
+def logout() -> Response:
+    response = RedirectResponse("/login", status_code=303)
+    response.delete_cookie(SESSION_COOKIE)
+    return response
+
+
+def _safe_next(target: str) -> str:
+    """Only ever redirect within this app.
+
+    `//evil.example` and `https://evil.example` are both absolute URLs to a
+    browser, so checking for a leading `/` alone is not enough.
+    """
+    if not target.startswith("/") or target.startswith("//"):
+        return "/"
+    return target
 
 
 # ── Security middleware ────────────────────────────────────────────
@@ -284,6 +429,7 @@ def _chrome(conn: psycopg.Connection[object]) -> dict[str, Any]:
         key=lambda entry: (-entry.message_count, entry.label),
     )
     return {
+        "authenticated": bool(Settings.from_env().web_password_hash),
         "mailboxes": MAILBOXES,
         "mailbox_counts": counts,
         "category_tabs": CATEGORY_TABS,
