@@ -9,13 +9,49 @@ default suite stays Docker-free.
 from __future__ import annotations
 
 import os
+import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
 
+import psycopg
 import pytest
 
 from gmail_archive.migrate import discover
 
 DSN = os.environ.get("GMAIL_ARCHIVE_TEST_DATABASE_URL")
+
+
+@contextmanager
+def _scratch_database(dsn: str) -> Iterator[str]:
+    """A short-lived empty database, dropped on the way out.
+
+    The migration runner has to be tested against a virgin schema, which the
+    shared test database is not once anything else has run against it.
+    """
+    name = f"gmail_archive_migrate_{uuid.uuid4().hex[:12]}"
+    admin = psycopg.connect(dsn, autocommit=True)
+    try:
+        admin.execute(f'create database "{name}"')
+    finally:
+        admin.close()
+
+    parsed = urlsplit(dsn)
+    scratch = urlunsplit(parsed._replace(path=f"/{name}"))
+    try:
+        yield scratch
+    finally:
+        admin = psycopg.connect(dsn, autocommit=True)
+        try:
+            admin.execute(
+                "select pg_terminate_backend(pid) from pg_stat_activity"
+                " where datname = %s",
+                (name,),
+            )
+            admin.execute(f'drop database if exists "{name}"')
+        finally:
+            admin.close()
 
 
 class TestDiscovery:
@@ -67,26 +103,44 @@ class TestDiscovery:
 @pytest.mark.skipif(not DSN, reason="needs GMAIL_ARCHIVE_TEST_DATABASE_URL")
 class TestApply:
     def test_migrate_is_idempotent(self) -> None:
-        import psycopg
-
         from gmail_archive.migrate import migrate, pending
 
         assert DSN is not None
-        first = migrate(DSN)
-        assert first, "expected at least one migration to run"
-        second = migrate(DSN)
-        assert second == [], "a second run must apply nothing"
-        with psycopg.connect(DSN) as conn:
-            assert pending(conn) == []
+        # Against its own throwaway database. Asserting "at least one
+        # migration ran" only holds on a virgin schema, and any environment
+        # that applied the schema before running the suite — CI does, so the
+        # web tests have tables — made this fail.
+        with _scratch_database(DSN) as scratch_dsn:
+            first = migrate(scratch_dsn)
+            assert first, "expected at least one migration to run"
+            second = migrate(scratch_dsn)
+            assert second == [], "a second run must apply nothing"
+            with psycopg.connect(scratch_dsn) as conn:
+                assert pending(conn) == []
 
     def test_schema_supports_the_keyset_ordering(self) -> None:
-        import psycopg
 
         from gmail_archive.migrate import migrate
 
         assert DSN is not None
         migrate(DSN)
         with psycopg.connect(DSN) as conn:
+            # The planner picks a sequential scan on a tiny table however good
+            # the index is, so seed enough rows for the index to be the
+            # cheaper option. Without this the test only passed on a machine
+            # whose database already had an archive in it.
+            conn.execute(
+                "insert into blobs (sha256, size_bytes, kind)"
+                " select md5(g::text) || md5((g + 1)::text), 1, 'message'"
+                " from generate_series(1, 2000) g on conflict do nothing"
+            )
+            conn.execute(
+                "insert into messages (raw_sha256, size_bytes, internal_date)"
+                " select md5(g::text) || md5((g + 1)::text), 1,"
+                " now() - (g || ' hours')::interval"
+                " from generate_series(1, 2000) g on conflict do nothing"
+            )
+            conn.execute("analyze messages")
             # The query planner must be able to use the index for the exact
             # ordering query.py will emit; a mismatch here is a sequential scan
             # over the whole archive.

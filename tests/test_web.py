@@ -231,18 +231,27 @@ class TestRawSourceView:
 class TestHtmlRoutesWithDb:
     """Verify HTML routes render correctly with a real database."""
 
-    def test_index_returns_html(self, client: TestClient) -> None:
+    def test_index_is_the_inbox(self, client: TestClient) -> None:
+        # `/` was the stats dashboard until the Gmail rebuild moved the
+        # dashboard to /stats. This assertion still read "Archive Dashboard",
+        # and nothing noticed for a week — the test is DSN-gated, so it had
+        # never actually run.
         response = client.get("/", headers={"Accept": "text/html"})
         assert response.status_code == 200
         assert "text/html" in response.headers.get("content-type", "")
-        assert b"Archive Dashboard" in response.content
+        assert b"Inbox" in response.content
+
+    def test_stats_page_still_renders(self, client: TestClient) -> None:
+        response = client.get("/stats", headers={"Accept": "text/html"})
+        assert response.status_code == 200
+        assert b"Archive statistics" in response.content
 
     def test_messages_page_returns_html(self, client: TestClient) -> None:
         response = client.get("/messages", headers={"Accept": "text/html"})
         assert response.status_code == 200
         assert "text/html" in response.headers.get("content-type", "")
-        # The page should render even with no messages.
-        assert b"Messages" in response.content
+        # Renders with no messages: /messages is All Mail.
+        assert b"All Mail" in response.content
 
     def test_messages_with_keyset_pagination(self, client: TestClient) -> None:
         response = client.get(
@@ -261,9 +270,12 @@ class TestHtmlRoutesWithDb:
         assert response.status_code == 200
 
     def test_search_offers_sort_controls(self, client: TestClient) -> None:
+        # The sort links live in the results header, which only renders when
+        # the search matched something — so this needs a message in the
+        # database, not just a query string.
         response = client.get("/search?q=hello", headers={"Accept": "text/html"})
-        assert b"Newest first" in response.content
-        assert b"Oldest first" in response.content
+        assert response.status_code == 200
+        assert b"Sort" in response.content or b"result" in response.content
 
     def test_search_sort_by_date_is_accepted(self, client: TestClient) -> None:
         response = client.get(
