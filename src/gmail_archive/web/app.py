@@ -28,6 +28,7 @@ from gmail_archive.query import (
     SEARCH_SORTS,
     SYSTEM_LABELS,
     LabelCount,
+    database_stats,
     date_bounds,
     get_message,
     get_message_full,
@@ -42,6 +43,7 @@ from gmail_archive.storage import BlobStore
 from gmail_archive.version import build_info
 from gmail_archive.web.filters import (
     defang,
+    filesize,
     gmail_date,
     highlight_snippet,
     relative_date,
@@ -86,6 +88,7 @@ templates.env.filters["relative_date"] = relative_date
 templates.env.filters["gmail_date"] = gmail_date
 templates.env.filters["sender_name"] = sender_name
 templates.env.filters["defang"] = defang
+templates.env.filters["filesize"] = filesize
 templates.env.filters["highlight_snippet"] = highlight_snippet
 app.mount("/static", StaticFiles(directory=str(HERE / "static")), name="static")
 
@@ -341,6 +344,7 @@ def stats_page(request: Request) -> HTMLResponse:
     try:
         with _get_conn() as conn:
             s = stats(conn)
+            db = database_stats(conn)
             context = _chrome(conn)
     except psycopg.Error:
         return templates.TemplateResponse(
@@ -350,6 +354,7 @@ def stats_page(request: Request) -> HTMLResponse:
             status_code=503,
         )
     context["stats"] = s
+    context["db"] = db
     return templates.TemplateResponse(request, "index.html", context)
 
 

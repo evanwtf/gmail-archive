@@ -20,10 +20,75 @@
   {% endfor %}
 </div>
 
-<table class="kv">
-  <tr><th>Total message bytes</th><td>{{ "{:,}".format(stats.total_bytes) }}</td></tr>
-  <tr><th>Blob store bytes</th><td>{{ "{:,}".format(stats.blob_bytes) }}</td></tr>
+<table class="kv stats-kv">
   <tr><th>Earliest message</th><td>{{ stats.date_earliest|default("N/A", true) }}</td></tr>
   <tr><th>Latest message</th><td>{{ stats.date_latest|default("N/A", true) }}</td></tr>
+</table>
+
+<h2 class="stats-heading">Storage</h2>
+
+{# The split is the point of the design: raw bytes go to disk so the database
+   stays small enough that a pg_dump is worth taking regularly (ADR-001). This
+   is the page that shows whether that is still true. #}
+<div class="stats-grid">
+  <div class="stat-card">
+    <span class="stat-value">{{ db.database_bytes|filesize }}</span>
+    <span class="stat-label">Postgres database</span>
+  </div>
+  <div class="stat-card">
+    <span class="stat-value">{{ stats.blob_bytes|filesize }}</span>
+    <span class="stat-label">Blob store (message bytes)</span>
+  </div>
+  <div class="stat-card">
+    <span class="stat-value">{{ (db.database_bytes + stats.blob_bytes)|filesize }}</span>
+    <span class="stat-label">Archive total</span>
+  </div>
+  {% if stats.blob_bytes %}
+  <div class="stat-card">
+    <span class="stat-value">{{ "%.0f"|format(db.database_bytes / stats.blob_bytes * 100) }}%</span>
+    <span class="stat-label">Database as % of mail</span>
+  </div>
+  {% endif %}
+</div>
+
+<h2 class="stats-heading">Tables</h2>
+
+<p class="stats-note">Row counts are planner estimates from
+  <code>pg_stat_user_tables</code>, not exact counts — an exact count over
+  every table costs about half a second. TOAST is out-of-line storage for
+  large values, which here is almost entirely message bodies.</p>
+
+<div class="table-scroll">
+  <table class="sizes">
+    <thead>
+      <tr>
+        <th>Table</th>
+        <th class="num">Rows (est.)</th>
+        <th class="num">Heap</th>
+        <th class="num">TOAST</th>
+        <th class="num">Indexes</th>
+        <th class="num">Total</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for rel in db.relations %}
+      <tr>
+        <td><code>{{ rel.name }}</code></td>
+        <td class="num">{{ "{:,}".format(rel.est_rows) }}</td>
+        <td class="num">{{ rel.heap_bytes|filesize }}</td>
+        <td class="num">{{ rel.toast_bytes|filesize }}</td>
+        <td class="num">{{ rel.index_bytes|filesize }}</td>
+        <td class="num strong">{{ rel.total_bytes|filesize }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<table class="kv stats-kv">
+  <tr><th>Postgres version</th><td>{{ db.server_version }}</td></tr>
+  <tr><th>Database</th><td><code>{{ db.database_name }}</code></td></tr>
+  <tr><th>Sum of message sizes</th><td>{{ stats.total_bytes|filesize }}
+    <span class="stats-hint">({{ "{:,}".format(stats.total_bytes) }} bytes)</span></td></tr>
 </table>
 {% endblock %}

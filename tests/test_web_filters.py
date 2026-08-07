@@ -138,3 +138,41 @@ class TestRelativeDate:
             )
         }
         assert units == {"second", "minute", "hour", "day", "month", "year"}
+
+
+class TestFilesize:
+    @pytest.mark.parametrize(
+        ("value", "expected"),
+        [
+            (0, "0 B"),
+            (1, "1 B"),
+            (999, "999 B"),
+            (1000, "1.0 kB"),
+            (47_000, "47.0 kB"),
+            (999_999, "1000 kB"),
+            (1_400_000_000, "1.4 GB"),
+            (412_000_000, "412 MB"),
+            (2_500_000_000_000, "2.5 TB"),
+        ],
+    )
+    def test_formats(self, value: int, expected: str) -> None:
+        from gmail_archive.web.filters import filesize
+
+        assert filesize(value) == expected
+
+    def test_none_is_a_dash_not_zero(self) -> None:
+        # "0 B" would be a claim; "—" is an absence.
+        from gmail_archive.web.filters import filesize
+
+        assert filesize(None) == "—"
+
+    def test_sub_kilobyte_keeps_exact_bytes(self) -> None:
+        from gmail_archive.web.filters import filesize
+
+        assert filesize(512) == "512 B"
+
+    def test_large_values_drop_the_decimal(self) -> None:
+        # "412 MB" reads better than "412.3 MB" and is no less useful.
+        from gmail_archive.web.filters import filesize
+
+        assert "." not in filesize(412_345_678)

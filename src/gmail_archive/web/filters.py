@@ -105,6 +105,27 @@ _BANDS: tuple[tuple[float, float, str], ...] = (
 )
 
 
+def filesize(value: int | float | None) -> str:
+    """Bytes as a human-readable size: ``1.4 GB``, ``812 MB``, ``47 kB``.
+
+    Decimal units, matching `pg_size_pretty`'s spirit if not its exact
+    spelling, so a figure here can be compared with one from psql without
+    mental arithmetic. Sizes below a kilobyte keep their exact byte count —
+    "0.0 kB" tells you nothing.
+    """
+    if value is None:
+        return "—"
+    size = float(value)
+    if size < 1000:
+        return f"{int(size)} B"
+    for unit in ("kB", "MB", "GB", "TB"):
+        size /= 1000
+        if size < 1000:
+            # One decimal below 100, none above: "9.4 GB" but "412 MB".
+            return f"{size:.1f} {unit}" if size < 100 else f"{size:.0f} {unit}"
+    return f"{size:.1f} PB"
+
+
 def gmail_date(value: datetime | None, now: datetime | None = None) -> str:
     """Format a date the way Gmail's message list does.
 

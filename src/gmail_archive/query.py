@@ -629,6 +629,84 @@ def get_thread_messages(
     return [_message_row(r) for r in (_row(rr) for rr in raw_rows)]
 
 
+@dataclass
+class RelationSize:
+    """On-disk size of one table, broken down by where the bytes live."""
+
+    name: str
+    #: Planner estimate from pg_stat_user_tables, not a count(*). Exact counts
+    #: over ten tables cost about half a second; this costs nothing and is
+    #: close enough for a size report. Labelled as an estimate in the UI.
+    est_rows: int
+    heap_bytes: int
+    toast_bytes: int
+    index_bytes: int
+    total_bytes: int
+
+
+@dataclass
+class DatabaseStats:
+    """Postgres-side storage accounting."""
+
+    server_version: str
+    database_name: str
+    database_bytes: int
+    relations: list[RelationSize]
+
+
+def database_stats(conn: psycopg.Connection[object]) -> DatabaseStats:
+    """Where the database's disk is actually going.
+
+    The interesting number for this project is the ratio between the database
+    and the blob store: ADR-001 puts raw message bytes on disk specifically so
+    a `pg_dump` stays small enough to take regularly, and this is the page
+    that shows whether that is still true.
+    """
+    raw = conn.execute(
+        "select current_setting('server_version'), current_database(),"
+        " pg_database_size(current_database())"
+    ).fetchone()
+    assert raw is not None
+    version_row = _row(raw)
+
+    raw_rows = conn.execute(
+        "select c.relname,"
+        "  coalesce(s.n_live_tup, 0),"
+        "  pg_relation_size(c.oid),"
+        # Total minus heap minus indexes is the TOAST side: the out-of-line
+        # storage for large values, which for this schema is almost entirely
+        # message bodies.
+        "  pg_total_relation_size(c.oid)"
+        "    - pg_relation_size(c.oid) - pg_indexes_size(c.oid),"
+        "  pg_indexes_size(c.oid),"
+        "  pg_total_relation_size(c.oid)"
+        " from pg_class c"
+        " join pg_namespace n on n.oid = c.relnamespace"
+        " left join pg_stat_user_tables s on s.relid = c.oid"
+        " where n.nspname = 'public' and c.relkind = 'r'"
+        " order by pg_total_relation_size(c.oid) desc"
+    ).fetchall()
+
+    relations = [
+        RelationSize(
+            name=str(r[0]),
+            est_rows=int(r[1]),
+            heap_bytes=int(r[2]),
+            toast_bytes=int(r[3]),
+            index_bytes=int(r[4]),
+            total_bytes=int(r[5]),
+        )
+        for r in (_row(rr) for rr in raw_rows)
+    ]
+
+    return DatabaseStats(
+        server_version=str(version_row[0]),
+        database_name=str(version_row[1]),
+        database_bytes=int(version_row[2]),
+        relations=relations,
+    )
+
+
 def date_bounds(conn: psycopg.Connection[object]) -> tuple[date | None, date | None]:
     """Earliest and latest plausible message dates, for the calendar's range.
 
