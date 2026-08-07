@@ -137,6 +137,43 @@ services:
     entrypoint: ["/app/.venv/bin/python", "-m", "gmail_archive", "ingest"]
     restart: "no"
 
+  # On-demand read-only IMAP server. Does not run on `up` (guarded by a
+  # profile), because it needs a password set and most sessions do not want it:
+  #   docker compose --profile imap up -d imap
+  imap:
+    profiles: ["imap"]
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runtime
+    # Loopback-only, deliberately, and unlike the web UI. The IMAP server has
+    # one shared password and no TLS, so reaching the network should be a
+    # deliberate edit rather than the default.
+    ports:
+      - "127.0.0.1:${IMAP_PORT:-1143}:1143"
+    environment:
+      GMAIL_ARCHIVE_BLOB_DIR: /blobs
+      GMAIL_ARCHIVE_LOG_LEVEL: ${GMAIL_ARCHIVE_LOG_LEVEL:-INFO}
+      GMAIL_ARCHIVE_DATABASE_URL: postgresql://gmail_archive:${POSTGRES_PASSWORD:-}@postgres:5432/gmail_archive
+      # Passed through explicitly — the whole bug in #25 was that setting this
+      # in .env never reached the container. Not `:?`: compose interpolates the
+      # entire file regardless of which profiles are active, so a required
+      # variable here breaks `docker compose ps` and `up` for the default
+      # stack too. The CLI already refuses to start without it, which is the
+      # right place for that error.
+      GMAIL_ARCHIVE_IMAP_PASSWORD: ${GMAIL_ARCHIVE_IMAP_PASSWORD:-}
+    volumes:
+      - ${GMAIL_ARCHIVE_BLOB_HOST_PATH:-./data/blobs}:/blobs
+    # 0.0.0.0 *inside* the container: the ports mapping above is what limits
+    # exposure. Binding 127.0.0.1 inside a container means the container's own
+    # loopback, which nothing outside it can reach.
+    command: ["imap", "--host", "0.0.0.0"]
+    stop_grace_period: 30s
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+
 volumes:
   # A named volume, not a bind mount: moving this stack between hosts is meant
   # to be an .env change plus a data copy, and a named volume keeps the database

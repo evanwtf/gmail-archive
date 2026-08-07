@@ -83,3 +83,63 @@ class TestAuthentication:
         second = login.user_identity
         assert first is not second
         assert await second.get() is not None
+
+
+class TestServerArguments:
+    """The CLI must produce the argument namespace pymap actually expects.
+
+    `gmail-archive imap` hand-built a Namespace and had never once started:
+    it died in `Config.from_args` with AttributeError on `cert`, because
+    pymap's IMAPService contributes that to the *top-level* parser rather
+    than to the backend subparser. Reconstructing pymap's own parser means
+    every field exists by construction.
+    """
+
+    def _namespace(self) -> object:
+        from argparse import ArgumentParser
+
+        from pymap.service import services
+
+        parser = ArgumentParser(prog="gmail-archive imap")
+        parser.add_argument("--debug", action="store_true")
+        parser.add_argument("--pid-file")
+        parser.add_argument("--logging-cfg")
+        subparsers = parser.add_subparsers(dest="backend", required=True)
+        subparser = GmailArchiveBackend.add_subparser("gmail-archive", subparsers)
+        subparser.set_defaults(backend_type=GmailArchiveBackend)
+        for service_type in services.values():
+            service_type.add_arguments(parser)
+        parser.set_defaults(
+            skip_services=[], passlib_cfg=None, set_uid=None, set_gid=None
+        )
+        return parser.parse_args(
+            [
+                "--host",
+                "127.0.0.1",
+                "--port",
+                "1143",
+                "--no-tls",
+                "gmail-archive",
+                "--database-url",
+                "",
+                "--user",
+                "archive",
+                "--password",
+                "secret",
+            ]
+        )
+
+    def test_config_accepts_the_namespace(self) -> None:
+        # The regression: this raised AttributeError before reaching a socket.
+        config = Config.from_args(self._namespace())  # type: ignore[arg-type]
+        assert config.imap_user == "archive"
+
+    @pytest.mark.parametrize(
+        "field",
+        ["cert", "key", "tls", "set_uid", "set_gid", "passlib_cfg", "host", "port"],
+    )
+    def test_every_field_pymap_reads_is_present(self, field: str) -> None:
+        # pymap.main.run() and Config.from_args between them read all of
+        # these; a missing one is an AttributeError at startup, not a type
+        # error at import, so only an actual construction catches it.
+        assert hasattr(self._namespace(), field), field

@@ -445,31 +445,58 @@ def imap(host: str, port: int, user: str, password: str | None) -> None:
         )
         raise click.Abort()
 
-    # Build a minimal Namespace that pymap's config system expects.
-    from argparse import Namespace
+    # Build the argument namespace the way pymap itself does, rather than
+    # hand-assembling one.
+    #
+    # A hand-built Namespace was missing `cert`, `key` and `tls` — pymap's
+    # IMAPService contributes those to the *top-level* parser, not to the
+    # backend subparser, so they are easy to overlook. The result was that
+    # `gmail-archive imap` had never once started: it died in
+    # `Config.from_args` with AttributeError before binding a socket.
+    #
+    # Reconstructing pymap's parser means every default it expects exists by
+    # construction, and a future pymap release that adds an option cannot
+    # silently break this again.
+    from argparse import ArgumentParser
 
-    args = Namespace(
-        host=host,
-        port=port,
-        debug=False,
-        pid_file=None,
-        set_uid=None,
-        set_gid=None,
-        logging_cfg=None,
-        skip_services=[],
-        passlib_cfg=None,
-        database_url=settings.database_url,
-        user=user,
-        password=imap_password,
-        tls_cert=None,
-        tls_key=None,
-        tls_implicit=False,
-        tls_required=False,
-        auth_required=True,
-        login_delay=0,
-        login_max_failures=3,
-        login_failure_sleep=3,
-        disable_search_keys=frozenset(),
+    from pymap.service import services
+
+    parser = ArgumentParser(prog="gmail-archive imap")
+    parser.add_argument("--debug", action="store_true")
+    parser.add_argument("--pid-file")
+    parser.add_argument("--logging-cfg")
+    subparsers = parser.add_subparsers(dest="backend", required=True)
+    subparser = GmailArchiveBackend.add_subparser("gmail-archive", subparsers)
+    subparser.set_defaults(backend_type=GmailArchiveBackend)
+    for service_type in services.values():
+        service_type.add_arguments(parser)
+    # pymap's own main() adds --set-uid/--set-gid only on POSIX, and its
+    # run() reads them unconditionally. Supplied as defaults rather than
+    # flags: dropping privileges is the container's job, not this CLI's.
+    parser.set_defaults(skip_services=[], passlib_cfg=None, set_uid=None, set_gid=None)
+
+    # Service options come before the backend name; backend options after.
+    args = parser.parse_args(
+        [
+            "--host",
+            host,
+            "--port",
+            str(port),
+            # Without this pymap advertises LOGINDISABLED and refuses
+            # plaintext auth, which is correct of it — but there is no cert
+            # here, and the server is published on loopback only. The
+            # alternative is a self-signed cert every client then has to be
+            # told to trust. Documented in the runbook, and the reason the
+            # compose service does not reach the network.
+            "--no-tls",
+            "gmail-archive",
+            "--database-url",
+            settings.database_url,
+            "--user",
+            user,
+            "--password",
+            imap_password,
+        ]
     )
 
     async def _run() -> None:
@@ -565,7 +592,23 @@ def imap_backfill() -> None:
 
         conn.commit()
 
-        # Assign UIDs for folders
+        # ── Assign UIDs ──────────────────────────────────────────────
+        #
+        # UIDs must be assigned once, ascend strictly within a folder, and
+        # never be reused: clients cache them hard and read a changed UID as
+        # data loss. The migration says so in as many words.
+        #
+        # This previously numbered messages by their position in an
+        # `ORDER BY raw_sha256` listing. A single new message with a low hash
+        # shifted every later position by one, so a re-run offered an existing
+        # UID to a different message and hit the `(folder_id, uid)` primary
+        # key. The ON CONFLICT clause names `(folder_id, raw_sha256)`, so that
+        # collision was not caught — the statement raised and the backfill
+        # aborted mid-folder with earlier folders already committed.
+        #
+        # Now: only messages with no UID in this folder get one, numbered from
+        # the folder's current maximum, ordered by arrival. Existing UIDs are
+        # never touched, and a re-run after an ingest simply appends.
         click.echo("Assigning UIDs...")
         folder_rows = conn.execute(
             "SELECT id, name FROM imap_folders ORDER BY name"
@@ -573,36 +616,46 @@ def imap_backfill() -> None:
         for folder_id, folder_name in folder_rows:
             label_filter = None if folder_name == "INBOX" else folder_name
 
-            # Get messages for this folder
             if label_filter:
-                msg_rows = conn.execute(
-                    """
-                    SELECT l.raw_sha256
-                    FROM labels l
-                    WHERE l.label = %s
-                    ORDER BY l.raw_sha256
-                    """,
-                    (label_filter,),
-                ).fetchall()
-            else:
-                # INBOX: all messages
-                msg_rows = conn.execute(
-                    "SELECT raw_sha256 FROM messages ORDER BY raw_sha256"
-                ).fetchall()
-
-            # Assign UIDs for messages not yet mapped
-            for idx, (raw_sha256,) in enumerate(msg_rows, start=1):
-                conn.execute(
-                    """
-                    INSERT INTO imap_uids (folder_id, raw_sha256, uid)
-                    VALUES (%s, %s, %s)
-                    ON CONFLICT (folder_id, raw_sha256) DO NOTHING
-                    """,
-                    (folder_id, raw_sha256, idx),
+                source = (
+                    "SELECT m.raw_sha256, m.ingested_at"
+                    " FROM messages m JOIN labels l ON l.raw_sha256 = m.raw_sha256"
+                    " WHERE l.label = %(label)s"
                 )
+            else:
+                # INBOX gets everything.
+                source = "SELECT m.raw_sha256, m.ingested_at FROM messages m"
+
+            assigned = conn.execute(
+                f"""
+                WITH candidates AS (
+                    {source}
+                ),
+                unassigned AS (
+                    SELECT c.raw_sha256,
+                           row_number() OVER (
+                               ORDER BY c.ingested_at, c.raw_sha256
+                           ) AS n
+                    FROM candidates c
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM imap_uids u
+                        WHERE u.folder_id = %(folder)s
+                          AND u.raw_sha256 = c.raw_sha256
+                    )
+                ),
+                base AS (
+                    SELECT coalesce(max(uid), 0) AS start
+                    FROM imap_uids WHERE folder_id = %(folder)s
+                )
+                INSERT INTO imap_uids (folder_id, raw_sha256, uid)
+                SELECT %(folder)s, u.raw_sha256, base.start + u.n
+                FROM unassigned u, base
+                """,
+                {"folder": folder_id, "label": label_filter},
+            ).rowcount
 
             conn.commit()
-            click.echo(f"  Folder '{folder_name}': {len(msg_rows)} UIDs assigned")
+            click.echo(f"  Folder '{folder_name}': {assigned} new UIDs")
 
     click.echo("Backfill complete.")
 

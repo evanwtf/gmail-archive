@@ -100,7 +100,8 @@ class MailboxData(MailboxDataInterface[Message]):
     async def _load_all_messages(self) -> list[Message]:
         """Load all messages for this folder from the database."""
         messages: list[Message] = []
-        async with self._conn_factory() as conn:
+        pool = await self._conn_factory()
+        async with pool.connection() as conn:
             rows = await conn.execute(
                 """
                 SELECT u.uid, m.raw_sha256, m.internal_date, m.subject, m.from_addr
@@ -221,7 +222,8 @@ class MailboxSet(MailboxSetInterface[MailboxData]):
 
         Returns a dict of ``{name: (folder_id, uid_validity)}``.
         """
-        async with self._conn_factory() as conn:
+        pool = await self._conn_factory()
+        async with pool.connection() as conn:
             # Ensure INBOX exists
             await conn.execute(
                 """

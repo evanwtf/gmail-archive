@@ -111,3 +111,35 @@ class TestPublicRepositoryHygiene:
         services = _compose()["services"]
         for name in services:
             assert "promtail" not in name and "loki" not in name, name
+
+
+class TestImapService:
+    """The IMAP server is runnable under compose, behind a profile (#25)."""
+
+    def test_imap_service_exists_behind_a_profile(self) -> None:
+        service = _service("imap")
+        assert service["profiles"] == ["imap"]
+
+    def test_the_imap_password_is_passed_into_the_container(self) -> None:
+        # The bug: .env set it for the compose process, not for the container,
+        # so the server always aborted with "IMAP password not set".
+        env = _service("imap")["environment"]
+        assert "GMAIL_ARCHIVE_IMAP_PASSWORD" in env
+
+    def test_the_password_is_not_a_required_interpolation(self) -> None:
+        # `${VAR:?...}` is interpolated for the whole file whatever profile is
+        # active, so a required variable here breaks `docker compose ps` and
+        # `up` for the default stack. Found the hard way.
+        raw = (_REPO_ROOT / "docker-compose.yml").read_text()
+        assert "GMAIL_ARCHIVE_IMAP_PASSWORD:?" not in raw
+
+    def test_imap_binds_all_interfaces_inside_the_container(self) -> None:
+        # 127.0.0.1 inside a container is the container's own loopback, which
+        # nothing outside can reach; the ports mapping is what limits exposure.
+        assert "0.0.0.0" in _service("imap")["command"]
+
+    def test_imap_is_published_on_loopback_only(self) -> None:
+        # Unlike the web UI: one shared password and no TLS, so reaching the
+        # network should be a deliberate edit.
+        for mapping in _service("imap")["ports"]:
+            assert str(mapping).startswith("127.0.0.1:"), mapping
