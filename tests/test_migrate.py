@@ -9,94 +9,13 @@ default suite stays Docker-free.
 from __future__ import annotations
 
 import os
-import uuid
-from collections.abc import Iterator
-from contextlib import contextmanager
-from pathlib import Path
-from urllib.parse import urlsplit, urlunsplit
 
 import psycopg
 import pytest
 
-from gmail_archive.migrate import discover
+from conftest import scratch_database
 
 DSN = os.environ.get("GMAIL_ARCHIVE_TEST_DATABASE_URL")
-
-
-@contextmanager
-def _scratch_database(dsn: str) -> Iterator[str]:
-    """A short-lived empty database, dropped on the way out.
-
-    The migration runner has to be tested against a virgin schema, which the
-    shared test database is not once anything else has run against it.
-    """
-    name = f"gmail_archive_migrate_{uuid.uuid4().hex[:12]}"
-    admin = psycopg.connect(dsn, autocommit=True)
-    try:
-        admin.execute(f'create database "{name}"')
-    finally:
-        admin.close()
-
-    parsed = urlsplit(dsn)
-    scratch = urlunsplit(parsed._replace(path=f"/{name}"))
-    try:
-        yield scratch
-    finally:
-        admin = psycopg.connect(dsn, autocommit=True)
-        try:
-            admin.execute(
-                "select pg_terminate_backend(pid) from pg_stat_activity"
-                " where datname = %s",
-                (name,),
-            )
-            admin.execute(f'drop database if exists "{name}"')
-        finally:
-            admin.close()
-
-
-class TestDiscovery:
-    def test_finds_the_real_migrations(self) -> None:
-        found = discover()
-        assert found, "no migrations discovered"
-        assert found[0].version == 1
-        assert found[0].name == "initial"
-
-    def test_returned_in_version_order(self, tmp_path: Path) -> None:
-        for name in ("0003_c.sql", "0001_a.sql", "0002_b.sql"):
-            (tmp_path / name).write_text("select 1;")
-        assert [m.version for m in discover(tmp_path)] == [1, 2, 3]
-
-    def test_a_misnamed_file_is_an_error_not_a_skip(self, tmp_path: Path) -> None:
-        # Skipping it silently would mean a schema that differs between machines
-        # with nothing to show for it.
-        (tmp_path / "0001_ok.sql").write_text("select 1;")
-        (tmp_path / "add_index.sql").write_text("select 1;")
-        with pytest.raises(ValueError, match="not a valid migration name"):
-            discover(tmp_path)
-
-    def test_duplicate_versions_are_rejected(self, tmp_path: Path) -> None:
-        (tmp_path / "0001_a.sql").write_text("select 1;")
-        (tmp_path / "0001_b.sql").write_text("select 1;")
-        with pytest.raises(ValueError, match="duplicate migration version"):
-            discover(tmp_path)
-
-    def test_dotfiles_are_ignored(self, tmp_path: Path) -> None:
-        (tmp_path / "0001_a.sql").write_text("select 1;")
-        (tmp_path / ".DS_Store").write_text("junk")
-        assert len(discover(tmp_path)) == 1
-
-    def test_missing_directory_raises(self, tmp_path: Path) -> None:
-        with pytest.raises(FileNotFoundError):
-            discover(tmp_path / "nope")
-
-    def test_initial_migration_is_readable_sql(self) -> None:
-        sql = discover()[0].sql
-        assert "create table if not exists messages" in sql
-        # The three decisions most likely to be "cleaned up" by someone who does
-        # not know why they are there.
-        assert "nulls last" in sql
-        assert "to_tsvector('english'" in sql
-        assert "references blobs (sha256)" in sql
 
 
 @pytest.mark.integration
@@ -110,7 +29,7 @@ class TestApply:
         # migration ran" only holds on a virgin schema, and any environment
         # that applied the schema before running the suite — CI does, so the
         # web tests have tables — made this fail.
-        with _scratch_database(DSN) as scratch_dsn:
+        with scratch_database(DSN) as scratch_dsn:
             first = migrate(scratch_dsn)
             assert first, "expected at least one migration to run"
             second = migrate(scratch_dsn)

@@ -739,6 +739,18 @@ def ingest(
         )
     except BaseException:
         # Try to mark the run as interrupted so it can be resumed.
+        #
+        # Roll back first. If the failure was a database error the
+        # transaction is already aborted, and every statement in this handler
+        # then fails with InFailedSqlTransaction — which is what surfaces to
+        # the caller, burying the real cause under "current transaction is
+        # aborted". Found while running the round-trip test against a
+        # database with no schema: the actual error was UndefinedTable and it
+        # took a chained traceback to see it.
+        try:
+            conn.rollback()
+        except Exception:
+            logger.debug("rollback before finalize failed", exc_info=True)
         try:
             _finalize_run(
                 conn,

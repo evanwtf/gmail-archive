@@ -8,8 +8,13 @@ module.
 from __future__ import annotations
 
 import sys
+import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
 
+import psycopg
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
@@ -58,3 +63,34 @@ def simple_mbox(tmp_path: Path) -> Path:
     path = tmp_path / "simple.mbox"
     path.write_bytes(SIMPLE_MBOX)
     return path
+
+
+@contextmanager
+def scratch_database(dsn: str) -> Iterator[str]:
+    """A short-lived empty database, dropped on the way out.
+
+    Some tests cannot share the suite's database: the migration runner needs a
+    virgin schema, and the export round trip exports *everything* it can see,
+    so rows another test left behind change what it is asserting about.
+    """
+    name = f"gmail_archive_scratch_{uuid.uuid4().hex[:12]}"
+    admin = psycopg.connect(dsn, autocommit=True)
+    try:
+        admin.execute(f'create database "{name}"')
+    finally:
+        admin.close()
+
+    parts = urlsplit(dsn)
+    try:
+        yield urlunsplit(parts._replace(path=f"/{name}"))
+    finally:
+        admin = psycopg.connect(dsn, autocommit=True)
+        try:
+            admin.execute(
+                "select pg_terminate_backend(pid) from pg_stat_activity"
+                " where datname = %s",
+                (name,),
+            )
+            admin.execute(f'drop database if exists "{name}"')
+        finally:
+            admin.close()
