@@ -114,7 +114,20 @@ class TestSearchSorts:
         # Deliberate: the common query here is a sender or a domain, where
         # every hit is equally "relevant" and ts_rank orders arbitrarily.
         assert DEFAULT_SEARCH_SORT == "date"
-        assert SEARCH_SORTS[DEFAULT_SEARCH_SORT].startswith("internal_date desc")
+        # Implausible future dates are demoted first (#27), so the date term
+        # is no longer the leading one — but it must still be there and still
+        # be descending.
+        clause = SEARCH_SORTS[DEFAULT_SEARCH_SORT]
+        assert "internal_date desc nulls last" in clause
+        assert clause.startswith("(internal_date > now()")
+
+    def test_implausible_dates_sort_last_in_every_date_ordering(self) -> None:
+        # A Date header of 2611 is a broken header, not the newest mail in
+        # the archive — but newest-first put it above everything (#27).
+        assert "now() + interval" in SEARCH_SORTS["date"]
+        assert "now() + interval" in SEARCH_SORTS["relevance"]
+        # Oldest-first is unaffected: a future date is already last there.
+        assert "now() + interval" not in SEARCH_SORTS["date-asc"]
 
     def test_default_sort_does_not_rank(self) -> None:
         # ts_rank in the default ordering would mean paying for the rank

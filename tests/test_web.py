@@ -588,3 +588,35 @@ class TestPageLimits:
         # Measured on ~18,000 matches: offset 1,000 is 2.1s and 5,000 is 9.0s,
         # so a cap that still allows several seconds is not a cap.
         assert MAX_SEARCH_OFFSET <= 2_000
+
+
+class TestUndatedTail:
+    """Messages with no Date must be reachable by browsing (#15)."""
+
+    def test_the_route_offers_a_cursor_into_the_null_tail(self) -> None:
+        # A row comparison against a NULL internal_date never matches, so the
+        # dated walk simply stops — leaving ~7,400 messages stored,
+        # searchable, and unreachable, with nothing on screen to say so.
+        # The tail is entered with an empty after_date and the highest sha.
+        from pathlib import Path
+
+        import gmail_archive.web as web_pkg
+
+        template = (
+            Path(web_pkg.__file__).parent / "templates" / "mailbox.html"
+        ).read_text()
+        # The pager must sit outside the rows block, or the page that ends the
+        # dated walk — which has no rows — cannot offer the link.
+        pager = template.index('class="pager"')
+        rows_end = template.index("{% endif %}", template.index("{% else %}"))
+        assert pager > rows_end, "the pager must render when the page has no rows"
+
+    def test_the_link_is_labelled_for_what_it_leads_to(self) -> None:
+        from pathlib import Path
+
+        import gmail_archive.web as web_pkg
+
+        template = (
+            Path(web_pkg.__file__).parent / "templates" / "mailbox.html"
+        ).read_text()
+        assert "Messages with no date" in template

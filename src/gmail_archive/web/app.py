@@ -581,6 +581,15 @@ def index(
             "after_date": str(last.internal_date) if last.internal_date else "",
             "after_sha": last.raw_sha256,
         }
+    elif after_date_dt is not None and on_day is None:
+        # The dated messages ran out. Undated ones sort last and a row
+        # comparison against NULL never matches, so the walk used to simply
+        # stop here — leaving ~2.7% of the archive stored, searchable, and
+        # unreachable by browsing, with nothing on screen to say so (#15).
+        #
+        # `after_date` empty with the highest possible sha enters the NULL
+        # tail, which `list_messages_keyset` already knows how to page.
+        next_cursor = {"after_date": "", "after_sha": "f" * 64}
 
     context.update(
         {

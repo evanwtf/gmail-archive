@@ -238,12 +238,27 @@ def stats(conn: psycopg.Connection[object]) -> ArchiveStats:
 #: `date` matches `messages_keyset_idx` exactly, so it sorts from the index
 #: rather than the rank expression. Both orderings break ties on `raw_sha256`
 #: so a page boundary is stable across requests.
+#: Sorts a date the sender cannot have meant after the real ones.
+#:
+#: A `Date` header is whatever the sending client claimed, and the parser
+#: keeps implausible values rather than discarding them — correctly, since the
+#: header is a fact about the message. But a message dated 2611 is not the
+#: newest mail in the archive, and newest-first put it above everything (#27).
+#:
+#: Demoted rather than hidden, and demoted the same way NULLs already are, so
+#: the row is still reachable at the end of the walk.
+_IMPLAUSIBLE_LAST = "(internal_date > now() + interval '90 days') asc"
+
+#: The same expression, qualified, for queries that alias `messages` as `m`.
+_IMPLAUSIBLE_LAST_M = "(m.internal_date > now() + interval '90 days') asc"
+
 SEARCH_SORTS: dict[str, str] = {
     "relevance": (
         "ts_rank(search_tsv, websearch_to_tsquery('english', %(q)s)) desc,"
+        f" {_IMPLAUSIBLE_LAST},"
         " internal_date desc nulls last, raw_sha256 desc"
     ),
-    "date": "internal_date desc nulls last, raw_sha256 desc",
+    "date": f"{_IMPLAUSIBLE_LAST}, internal_date desc nulls last, raw_sha256 desc",
     "date-asc": "internal_date asc nulls last, raw_sha256 asc",
 }
 
@@ -588,7 +603,11 @@ def list_messages_keyset(
         f" {_LABELS_SQL} as labels"
         " from messages m"
         f"{where}"
-        " order by m.internal_date desc nulls last, m.raw_sha256 desc"
+        # Implausible dates last, for the reason at _IMPLAUSIBLE_LAST. The
+        # keyset predicate is unchanged, so paging still works: this only
+        # moves the handful of broken rows to the end of the walk.
+        f" order by {_IMPLAUSIBLE_LAST_M},"
+        " m.internal_date desc nulls last, m.raw_sha256 desc"
         " limit %s",
         (*params, limit),
     ).fetchall()

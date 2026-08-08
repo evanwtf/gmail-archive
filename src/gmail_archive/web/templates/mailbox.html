@@ -66,12 +66,6 @@
   {% endfor %}
 </div>
 
-{% if next_cursor %}
-<div class="pager">
-  <a class="pager-next" href="/?label={{ (label or '')|urlencode }}{% if category %}&amp;category={{ category|urlencode }}{% endif %}{% if on_day %}&amp;on={{ on_day }}{% endif %}&amp;limit={{ limit }}&amp;after_date={{ next_cursor.after_date|urlencode }}&amp;after_sha={{ next_cursor.after_sha }}">Older &rsaquo;</a>
-</div>
-{% endif %}
-
 {% elif on_day %}
 <p class="empty">
   No mail on {{ title }}{% if label %} in {{ label }}{% endif %}.
@@ -82,9 +76,23 @@
 
 {% else %}
 <p class="empty">
-  No messages in {{ title }}.
-  {% if label %}<a href="/?label=">Look in All Mail instead</a>.{% endif %}
+  {% if next_cursor %}
+    No more dated messages in {{ title }}.
+  {% else %}
+    No messages in {{ title }}.
+    {% if label %}<a href="/?label=">Look in All Mail instead</a>.{% endif %}
+  {% endif %}
 </p>
+{% endif %}
+
+{# Outside the rows block on purpose. The walk reaches a point where the dated
+   messages run out but ~7,400 undated ones remain — a row comparison against
+   a NULL date never matches, so that page is empty while there is still more
+   to see. Keeping the pager here is what makes the tail reachable (#15). #}
+{% if next_cursor %}
+<div class="pager">
+  <a class="pager-next" href="/?label={{ (label or '')|urlencode }}{% if category %}&amp;category={{ category|urlencode }}{% endif %}{% if on_day %}&amp;on={{ on_day }}{% endif %}&amp;limit={{ limit }}&amp;after_date={{ next_cursor.after_date|urlencode }}&amp;after_sha={{ next_cursor.after_sha }}">{% if messages %}Older{% else %}Messages with no date{% endif %} &rsaquo;</a>
+</div>
 {% endif %}
 
 {% endblock %}
