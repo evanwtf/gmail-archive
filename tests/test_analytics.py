@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 
 import pytest
 
@@ -16,6 +17,8 @@ from gmail_archive.analytics import (
     _BULK_DOMAIN_RATIO,
     _HIGH_VOLUME_BULK,
     _HIGH_VOLUME_DESPITE_PERSONAL,
+    _ROLE_PATTERN,
+    _UNREPLYABLE_PATTERN,
     BULK_CATEGORIES,
     YearActivity,
 )
@@ -59,6 +62,38 @@ class TestThresholds:
     def test_domain_inheritance_needs_a_strong_majority(self) -> None:
         # Low enough and a mixed domain like gmail.com gets swept up.
         assert _BULK_DOMAIN_RATIO >= 0.9
+
+    def test_role_addresses_are_not_treated_as_unreplyable(self) -> None:
+        # #44: these were one list, so a `hello@` you correspond with was
+        # filed as marketing — 59 real correspondents on the reference
+        # archive. Only a structurally unreplyable address may outrank the
+        # fact that you have written to it.
+        for addr in (
+            "hello@studio.example",
+            "info@lawyer.example",
+            "team@startup.example",
+            "support@shop.example",
+            "billing@vendor.example",
+            "contact@person.example",
+        ):
+            assert not re.search(_UNREPLYABLE_PATTERN, addr), addr
+            assert re.search(_ROLE_PATTERN, addr), addr
+
+    def test_addresses_that_cannot_receive_mail_are_recognised(self) -> None:
+        for addr in (
+            "no-reply@shop.example",
+            "noreply@shop.example",
+            "do-not-reply@bank.example",
+            "mailer-daemon@host.example",
+            "bounces+x@list.example",
+            "notifications@social.example",
+        ):
+            assert re.search(_UNREPLYABLE_PATTERN, addr), addr
+
+    def test_an_ordinary_address_matches_neither(self) -> None:
+        for addr in ("alice@example.com", "j.smith@company.example"):
+            assert not re.search(_UNREPLYABLE_PATTERN, addr), addr
+            assert not re.search(_ROLE_PATTERN, addr), addr
 
     def test_bulk_categories_are_gmails_own(self) -> None:
         assert set(BULK_CATEGORIES) == {

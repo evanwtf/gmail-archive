@@ -31,16 +31,30 @@ BULK_CATEGORIES = (
     "Category Forums",
 )
 
-#: Local parts that only ever belong to a machine. Deliberately conservative:
-#: matching too eagerly hides real people, which is the error that costs
-#: something. `alerts@` is included because a bank's alert robot is not a
-#: correspondent, and a person whose address begins "alerts" is vanishingly
-#: rare next to that.
-_NOREPLY_PATTERN = (
-    r"(^|[.+_-])(no-?reply|do-?not-?reply|donotreply|notifications?|notify"
-    r"|mailer(-daemon)?|bounces?|postmaster|automated|auto-?confirm"
-    r"|alerts?|updates?|newsletter|news|info|support|billing|receipts?"
-    r"|orders?|shipment|tracking|marketing|email|mail|hello|team)@"
+#: Addresses that structurally cannot receive mail. Nothing you send to one of
+#: these reaches a person, so these — and only these — may outrank the fact
+#: that you have written to the address.
+_UNREPLYABLE_PATTERN = (
+    r"(^|[.+_-])(no-?reply|do-?not-?reply|donotreply|noreply"
+    r"|mailer(-daemon)?|bounces?|postmaster|auto-?confirm|auto-?reply"
+    r"|automated|notifications?|notify)(\+[^@]*)?@"
+)
+
+#: Role addresses. A company sends from these, and a person may well answer
+#: from behind one — a freelancer's `hello@`, a small firm's `info@`, a
+#: shop's `support@`. They are evidence of bulk *only when nothing has ever
+#: been sent to them*.
+#:
+#: Separating these two lists is the whole fix for #44. Treating a role
+#: address as unreplyable filed 59 senders the archive's owner had actually
+#: corresponded with — 123 messages sent to them — as marketing, and hid them
+#: from the default view. The issue that specified this classifier said in as
+#: many words that a false "bulk" is the harmful direction, and lumping the
+#: two lists together did exactly that.
+_ROLE_PATTERN = (
+    r"(^|[.+_-])(alerts?|updates?|newsletter|news|info|support|billing"
+    r"|receipts?|orders?|shipment|tracking|marketing|email|mail|hello"
+    r"|team|contact|sales|admin|office)(\+[^@]*)?@"
 )
 
 #: A sender this prolific that has never been written to and never landed in
@@ -182,7 +196,8 @@ def rebuild_sender_profiles(conn: psycopg.Connection[object]) -> int:
                 r.last_seen,
                 r.bulk_labelled,
                 r.personal_labelled,
-                r.address ~ %(noreply)s as noreply_shaped
+                r.address ~ %(unreplyable)s as unreplyable,
+                r.address ~ %(role)s as role_shaped
             from received r
             left join sent s on s.address = r.address
         )
@@ -194,21 +209,24 @@ def rebuild_sender_profiles(conn: psycopg.Connection[object]) -> int:
             address,
             domain,
             case
-                when sent_to_count > 0 and not noreply_shaped then 'human'
-                when noreply_shaped then 'bulk'
+                -- Only a structurally unreplyable address outranks the fact
+                -- that mail was sent to this address.
+                when unreplyable then 'bulk'
+                when sent_to_count > 0 then 'human'
+                when role_shaped then 'bulk'
                 when bulk_labelled > personal_labelled and bulk_labelled > 0
                     then 'bulk'
                 when received_count >= %(high_volume)s
-                     and personal_labelled = 0 and sent_to_count = 0
+                     and personal_labelled = 0
                     then 'bulk'
-                when received_count >= %(high_volume_personal)s
-                     and sent_to_count = 0
-                    then 'bulk'
+                when received_count >= %(high_volume_personal)s then 'bulk'
                 else 'human'
             end as kind,
             array_remove(array[
                 case when sent_to_count > 0 then 'replied-to' end,
-                case when noreply_shaped then 'no-reply-address' end,
+                case when unreplyable then 'unreplyable-address' end,
+                case when role_shaped and sent_to_count = 0
+                     then 'role-address' end,
                 case when bulk_labelled > 0 then 'gmail-bulk-category' end,
                 case when personal_labelled > 0 then 'gmail-personal-category' end,
                 case when received_count >= %(high_volume)s
@@ -236,7 +254,8 @@ def rebuild_sender_profiles(conn: psycopg.Connection[object]) -> int:
         """,
         {
             "bulk": list(BULK_CATEGORIES),
-            "noreply": _NOREPLY_PATTERN,
+            "unreplyable": _UNREPLYABLE_PATTERN,
+            "role": _ROLE_PATTERN,
             "high_volume": _HIGH_VOLUME_BULK,
             "high_volume_personal": _HIGH_VOLUME_DESPITE_PERSONAL,
         },
