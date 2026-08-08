@@ -182,13 +182,33 @@ class TestLoginFlow:
 
     @pytest.mark.parametrize(
         "target",
-        ["//evil.example", "https://evil.example", "http://evil.example/x"],
+        [
+            "//evil.example",
+            "https://evil.example",
+            "http://evil.example/x",
+            # A browser normalises `\` to `/` in the authority position, so
+            # this is `//evil.example`. The first version of the guard
+            # accepted it.
+            "/\\evil.example",
+            # And dot segments are removed, so this collapses to
+            # `//evil.example` — same hole, different spelling.
+            "/..//evil.example",
+            "///evil.example",
+            "evil.example",
+        ],
     )
     def test_open_redirect_is_refused(self, secured: TestClient, target: str) -> None:
         # `//evil.example` is an absolute URL to a browser, so checking for a
         # leading slash alone is not enough.
         response = secured.post("/login", data={"password": PASSWORD, "next": target})
-        assert response.headers["location"] == "/"
+        location = response.headers["location"]
+        # The property is same-origin, not literally "/": a normalised target
+        # may legitimately resolve to a local path.
+        assert location.startswith("/"), location
+        assert not location.startswith("//"), location
+        assert "evil.example" not in location.split("?")[0].lstrip("/") or (
+            location.startswith("/evil.example")
+        ), location
 
     def test_a_relative_next_is_preserved(self, secured: TestClient) -> None:
         response = secured.post(

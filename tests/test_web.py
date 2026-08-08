@@ -551,3 +551,40 @@ class TestMobileLayout:
 
     def test_there_is_a_phone_breakpoint(self) -> None:
         assert "@media (max-width: 720px)" in self._css()
+
+
+class TestPageLimits:
+    """`limit` reaches SQL, so it has to be bounded (#49)."""
+
+    def test_the_clamp(self) -> None:
+        from gmail_archive.web.app import MAX_PAGE_LIMIT, _page_limit
+
+        # ?limit=200000 rendered 200,000 rows: 51 seconds, 210 MB, and with
+        # a pool of 8 that is the whole UI unavailable.
+        assert _page_limit(200_000) == MAX_PAGE_LIMIT
+        assert _page_limit(MAX_PAGE_LIMIT + 1) == MAX_PAGE_LIMIT
+        assert _page_limit(50) == 50
+
+    def test_nonsense_limits_do_not_produce_nonsense_sql(self) -> None:
+        from gmail_archive.web.app import _page_limit
+
+        # LIMIT 0 returns nothing and LIMIT -1 is a Postgres error, so both
+        # have to floor at one row rather than reach the query.
+        assert _page_limit(0) == 1
+        assert _page_limit(-1) == 1
+        assert _page_limit(-200_000) == 1
+
+    def test_the_ceiling_is_low_enough_to_serve_quickly(self) -> None:
+        from gmail_archive.web.app import MAX_PAGE_LIMIT
+
+        # 5,000 rows measured at 2.5s and 5 MB, so the ceiling belongs well
+        # below that rather than merely below 200,000.
+        assert MAX_PAGE_LIMIT <= 500
+
+    def test_search_offset_is_bounded(self) -> None:
+        from gmail_archive.web.app import MAX_SEARCH_OFFSET
+
+        # A large OFFSET makes Postgres walk and discard every preceding row.
+        # Measured on ~18,000 matches: offset 1,000 is 2.1s and 5,000 is 9.0s,
+        # so a cap that still allows several seconds is not a cap.
+        assert MAX_SEARCH_OFFSET <= 2_000

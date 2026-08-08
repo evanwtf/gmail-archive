@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import posixpath
 import re
 import threading
 from collections.abc import AsyncIterator
@@ -15,7 +16,7 @@ from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, quote
+from urllib.parse import parse_qs, quote, urlsplit, urlunsplit
 
 import nh3
 import psycopg
@@ -82,6 +83,39 @@ from gmail_archive.web.filters import (
 logger = logging.getLogger(__name__)
 
 HERE = Path(__file__).parent
+
+#: The most rows any page will render, whatever the query string asks for.
+#:
+#: `limit` used to go straight into SQL. `?limit=200000` really did render
+#: 200,000 rows: 51 seconds and a 210 MB response, measured. The pool caps at
+#: 8 connections, so eight such requests make the UI unavailable to everyone —
+#: and a bookmarked URL with a fat limit does it by accident.
+#:
+#: 200 is generous against a 50-row default and keeps the worst case well
+#: under a second.
+MAX_PAGE_LIMIT = 200
+
+#: The deepest OFFSET a search will honour.
+#:
+#: Postgres walks and discards every preceding row, so a large offset is the
+#: same denial of service wearing a different hat. Measured on a query with
+#: ~18,000 matches: offset 0 is 0.23s, 1,000 is 2.1s, 5,000 is 9.0s. The first
+#: cap tried here was 10,000, which is still multiple seconds — a bound that
+#: only prevents the very worst case is not much of a bound.
+#:
+#: 1,000 is page six at the maximum page size. Going deeper than that in a
+#: ranked result set is not really browsing, it is scraping.
+#:
+#: The real fix is keyset pagination, which the mailbox already uses and which
+#: search could use for its two date orderings — only `relevance` genuinely
+#: needs an offset, because rank is not a stable sort key.
+MAX_SEARCH_OFFSET = 1_000
+
+
+def _page_limit(value: int) -> int:
+    """Clamp a caller-supplied page size into something serveable."""
+    return max(1, min(value, MAX_PAGE_LIMIT))
+
 
 #: A content hash is 64 lowercase hex characters and nothing else. Checked
 #: before the blob store sees it: `BlobStore.path_for` raises ValueError on a
@@ -258,12 +292,27 @@ def logout() -> Response:
 def _safe_next(target: str) -> str:
     """Only ever redirect within this app.
 
-    `//evil.example` and `https://evil.example` are both absolute URLs to a
-    browser, so checking for a leading `/` alone is not enough.
+    Parsed rather than pattern-matched. The previous version rejected a
+    leading `//` but accepted `/\\evil.example` — browsers normalise a
+    backslash to a slash in the authority position, so that is an off-site
+    redirect wearing a local-looking prefix.
+
+    The property is "no scheme and no host", and "starts with a slash" was
+    only ever a proxy for it. Proxies for security properties are how that
+    bug survived being written and reviewed.
     """
-    if not target.startswith("/") or target.startswith("//"):
+    # Normalise the way a browser will, then check what it will actually see.
+    # Two normalisations matter, and skipping either leaves a hole:
+    #   `\` becomes `/` in the authority position, so `/\evil.example` is
+    #   `//evil.example`; and dot segments are removed, so `/..//evil.example`
+    #   collapses to `//evil.example` — protocol-relative, and off-site.
+    parts = urlsplit(target.replace("\\", "/"))
+    if parts.scheme or parts.netloc:
         return "/"
-    return target
+    path = posixpath.normpath(parts.path)
+    if not path.startswith("/") or path.startswith("//"):
+        return "/"
+    return urlunsplit(("", "", path, parts.query, ""))
 
 
 # ── Security middleware ────────────────────────────────────────────
@@ -465,6 +514,8 @@ def index(
     unchecked checkbox submits nothing at all, so without it "unchecked" and
     "not from the picker" are the same request.
     """
+    limit = _page_limit(limit)
+
     after_date_dt: datetime | None = None
     if after_date:
         try:
@@ -742,6 +793,8 @@ def search_page(
     """
     if sort not in SEARCH_SORTS:
         sort = DEFAULT_SEARCH_SORT
+    limit = _page_limit(limit)
+    offset = max(0, min(offset, MAX_SEARCH_OFFSET))
 
     try:
         with _get_conn() as conn:
