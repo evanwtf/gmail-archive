@@ -128,7 +128,16 @@ class BlobStore:
     def sweep_temporaries(self) -> int:
         """Remove `.tmp-*` files left by a killed run.
 
-        Safe unconditionally: a temporary is never referenced by a row.
+        **Only safe while no other ingest is writing.** This used to claim it
+        was safe unconditionally, on the grounds that a temporary is never
+        referenced by a row — true of a *dead* run, and wrong about a live
+        one, whose in-flight temporaries this happily deletes. The worker's
+        `os.replace` then fails, and if the sweep lands between the write and
+        the rename the blob is simply gone.
+
+        `ingest()` holds an advisory lock across the whole pipeline, which is
+        what makes calling this safe there. Anything else calling it needs to
+        establish the same thing first.
         """
         removed = 0
         if not self.root.is_dir():

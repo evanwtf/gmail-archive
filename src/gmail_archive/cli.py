@@ -140,6 +140,7 @@ def ingest(mbox: Path, workers: int | None, batch_size: int | None) -> None:
     Resumable and idempotent: re-running after a kill picks up where it left
     off, and re-ingesting the same file twice adds nothing.
     """
+    from gmail_archive.ingest import IngestAlreadyRunningError
     from gmail_archive.ingest import ingest as _ingest
 
     settings = Settings.from_env()
@@ -147,12 +148,17 @@ def ingest(mbox: Path, workers: int | None, batch_size: int | None) -> None:
         click.echo("GMAIL_ARCHIVE_DATABASE_URL is not set", err=True)
         raise click.Abort()
 
-    report = _ingest(
-        settings,
-        mbox,
-        workers=workers,
-        batch_size=batch_size,
-    )
+    try:
+        report = _ingest(
+            settings,
+            mbox,
+            workers=workers,
+            batch_size=batch_size,
+        )
+    except IngestAlreadyRunningError as exc:
+        # A refusal, not a crash: two ingests at once corrupt each other.
+        click.echo(str(exc), err=True)
+        raise click.Abort() from exc
     click.echo(
         json.dumps(
             {

@@ -50,6 +50,36 @@ logger = logging.getLogger(__name__)
 # so a handful of 25 MB failures does not bloat pg_dump.
 _FAILED_PREFIX_MAX = 8192
 
+#: Advisory lock key guarding the whole ingest pipeline. Arbitrary but stable;
+#: it only has to be the same number in every process.
+#:
+#: Two concurrent ingests corrupted each other in two ways, and this closes
+#: both. `sweep_temporaries` deletes `.tmp-*` files, which is safe against a
+#: *dead* run and destructive against a live one — it removes blobs another
+#: worker is mid-write on, and that worker's rename then fails. And
+#: `_ensure_run` adopts any run for the same source with status running or
+#: interrupted, so a second ingest joined the first, both wrote checkpoints
+#: from different low-water marks, and whichever finished first marked the run
+#: complete while the other was still going.
+#:
+#: A session-level lock is the right shape: Postgres drops it when the
+#: connection closes, so a killed ingest cannot leave the archive locked.
+_INGEST_LOCK_KEY = 4_021_968_115
+
+
+class IngestAlreadyRunningError(RuntimeError):
+    """Raised when another ingest holds the advisory lock."""
+
+
+def _acquire_ingest_lock(conn: psycopg.Connection[object]) -> bool:
+    """Try to take the ingest lock. Returns False if another run holds it."""
+    row = conn.execute(
+        "select pg_try_advisory_lock(%s)", (_INGEST_LOCK_KEY,)
+    ).fetchone()
+    if row is None:
+        return False
+    return bool(next(iter(row)))  # type: ignore[call-overload]
+
 
 @dataclass
 class IngestReport:
@@ -479,7 +509,22 @@ def ingest(
     n_batch = batch_size or settings.batch_size
     store = BlobStore(settings.blob_dir)
 
-    # Sweep any temporaries from a previous interrupted run.
+    # ── Exclusivity ─────────────────────────────────────────────────────
+    #
+    # Taken before anything touches the blob store or the run table. The sweep
+    # below is only safe while this is held: without it, a second ingest
+    # deletes the temporaries this one is writing.
+    conn = psycopg.connect(settings.database_url)
+    if not _acquire_ingest_lock(conn):
+        conn.close()
+        raise IngestAlreadyRunningError(
+            "another ingest is already running against this database; "
+            "wait for it to finish, or check `select * from ingest_runs "
+            "where status = 'running'`"
+        )
+
+    # Sweep any temporaries from a previous interrupted run. Safe now that the
+    # lock guarantees no other run is writing.
     store.sweep_temporaries()
 
     # Scan the mbox for message boundaries.
@@ -489,6 +534,7 @@ def ingest(
     logger.info("found %d messages in %s", total, source_path)
 
     if total == 0:
+        conn.close()  # releases the advisory lock
         return IngestReport(
             source_path=source_path,
             messages_seen=0,
@@ -498,8 +544,6 @@ def ingest(
             elapsed_seconds=0.0,
         )
 
-    # ── Database setup ──────────────────────────────────────────────────
-    conn = psycopg.connect(settings.database_url)
     run_id = 0
     messages_seen = 0
     messages_new = 0

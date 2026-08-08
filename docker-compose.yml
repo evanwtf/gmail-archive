@@ -15,7 +15,7 @@ services:
     # build. `build:` stays for development and CI: `docker compose build web`
     # still builds from this tree, and compose falls back to building if the
     # image cannot be pulled.
-    image: ${GMAIL_ARCHIVE_IMAGE:-evandhoffman/gmail-archive}:${GMAIL_ARCHIVE_IMAGE_TAG:-0.2.7}
+    image: ${GMAIL_ARCHIVE_IMAGE:-evandhoffman/gmail-archive}:${GMAIL_ARCHIVE_IMAGE_TAG:-0.2.8}
     build:
       context: .
       dockerfile: Dockerfile

@@ -455,3 +455,62 @@ class TestMboxUnquoting:
         assert result.metadata is not None
         codes = [w["code"] for w in json.loads(result.metadata["parse_warnings"])]
         assert "unquote-ambiguous" in codes
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not DSN, reason="needs GMAIL_ARCHIVE_TEST_DATABASE_URL")
+class TestIngestExclusivity:
+    """Only one ingest at a time (#46).
+
+    Two concurrent runs corrupted each other twice over: `sweep_temporaries`
+    deleted the other's in-flight blobs, and `_ensure_run` made both adopt the
+    same run row and fight over its checkpoint.
+    """
+
+    def test_a_second_ingest_refuses_while_the_first_holds_the_lock(
+        self, tmp_path: Path
+    ) -> None:
+        import psycopg
+
+        from gmail_archive.ingest import (
+            _INGEST_LOCK_KEY,
+            IngestAlreadyRunningError,
+            ingest,
+        )
+
+        mbox = _mbox(tmp_path, [b"Subject: one\n\nbody\n"])
+        settings = _settings(tmp_path)
+
+        # Stand in for the other ingest by holding its lock.
+        holder = psycopg.connect(DSN)  # type: ignore[arg-type]
+        try:
+            got = holder.execute(
+                "select pg_try_advisory_lock(%s)", (_INGEST_LOCK_KEY,)
+            ).fetchone()
+            assert got is not None and next(iter(got)) is True
+
+            with pytest.raises(IngestAlreadyRunningError):
+                ingest(settings, mbox)
+        finally:
+            holder.close()  # session-level lock, released on close
+
+    def test_the_lock_is_released_when_the_run_finishes(self, tmp_path: Path) -> None:
+        import psycopg
+
+        from gmail_archive.ingest import _INGEST_LOCK_KEY, ingest
+
+        mbox = _mbox(tmp_path, [b"Subject: two\n\nbody\n"])
+        ingest(_settings(tmp_path), mbox)
+
+        # A killed ingest must not leave the archive permanently locked, which
+        # is why this is a session lock rather than a row.
+        other = psycopg.connect(DSN)  # type: ignore[arg-type]
+        try:
+            got = other.execute(
+                "select pg_try_advisory_lock(%s)", (_INGEST_LOCK_KEY,)
+            ).fetchone()
+            assert got is not None and next(iter(got)) is True, (
+                "the lock outlived the run that took it"
+            )
+        finally:
+            other.close()
