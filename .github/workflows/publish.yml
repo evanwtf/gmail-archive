@@ -1,0 +1,91 @@
+# Publishes the runtime image on a release tag. See #51.
+#
+# The image carries no secrets and no mail: .dockerignore excludes .env,
+# data/, blobs/, backups/ and *.mbox, and an inspection of a built image shows
+# /app holding only .venv, migrations and src. That is what makes publishing
+# a personal mail tool's image safe — the mail is never in it.
+name: Publish image
+
+on:
+  push:
+    tags: ["v*"]
+  # Lets a failed publish be retried without cutting another tag.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing git tag to build and publish (e.g. v0.2.5)"
+        required: true
+
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false   # never abandon a half-pushed manifest
+
+jobs:
+  publish:
+    runs-on: [self-hosted, Linux, X64]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # workflow_dispatch supplies a tag; a tag push already is one.
+          ref: ${{ inputs.tag || github.ref }}
+          # metadata-action reads the tag, and the build stamps the commit.
+          fetch-depth: 0
+
+      - name: Derive version metadata
+        id: meta
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          [ -n "${{ inputs.tag }}" ] && version="${{ inputs.tag }}" && version="${version#v}"
+          echo "version=$version"                                    >> "$GITHUB_OUTPUT"
+          echo "minor=${version%.*}"                                 >> "$GITHUB_OUTPUT"
+          echo "commit=$(git rev-parse --short HEAD)"                >> "$GITHUB_OUTPUT"
+          echo "built=$(date -u +%Y-%m-%dT%H:%M:%SZ)"                >> "$GITHUB_OUTPUT"
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: runtime
+          push: true
+          # Version tags only, no `latest`. The schema changes between
+          # versions and there is no migration promise, so a floating tag
+          # would invite an upgrade across a breaking change by accident.
+          tags: |
+            ${{ secrets.DOCKERHUB_USERNAME }}/gmail-archive:${{ steps.meta.outputs.version }}
+            ${{ secrets.DOCKERHUB_USERNAME }}/gmail-archive:${{ steps.meta.outputs.minor }}
+          # These are declared in the Dockerfile and surfaced at /version.
+          # Without them every published image reports an empty version,
+          # which makes two deployments indistinguishable.
+          build-args: |
+            GMAIL_ARCHIVE_VERSION=${{ steps.meta.outputs.version }}
+            GMAIL_ARCHIVE_COMMIT=${{ steps.meta.outputs.commit }}
+            GMAIL_ARCHIVE_BUILD_TIME=${{ steps.meta.outputs.built }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # Keeps the Docker Hub page in step with the repository. Without this
+      # the overview is edited by hand and drifts from the docs it describes.
+      - name: Sync the Docker Hub overview
+        uses: peter-evans/dockerhub-description@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          repository: ${{ secrets.DOCKERHUB_USERNAME }}/gmail-archive
+          short-description: >-
+            Turn a Google Takeout Gmail export into a searchable local archive
+            you own — web UI, search, IMAP.
+          readme-filepath: ./docs/docker-hub.md
+
+      - name: Verify what was published
+        run: |
+          image="${{ secrets.DOCKERHUB_USERNAME }}/gmail-archive:${{ steps.meta.outputs.version }}"
+          docker pull "$image"
+          # Fail the run if the image cannot report its own identity, which
+          # is the cheapest end-to-end check that the build args landed.
+          docker run --rm "$image" version

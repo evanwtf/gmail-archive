@@ -11,6 +11,11 @@
 services:
   web:
     container_name: gmail-archive-web
+    # Published image, so a first run is a pull rather than a multi-minute
+    # build. `build:` stays for development and CI: `docker compose build web`
+    # still builds from this tree, and compose falls back to building if the
+    # image cannot be pulled.
+    image: ${GMAIL_ARCHIVE_IMAGE:-evandhoffman/gmail-archive}:${GMAIL_ARCHIVE_IMAGE_TAG:-0.2.5}
     build:
       context: .
       dockerfile: Dockerfile

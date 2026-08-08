@@ -6,6 +6,8 @@
 [![Postgres 18](https://img.shields.io/badge/postgres-18-336791)](https://www.postgresql.org/)
 [![Checked with mypy](https://img.shields.io/badge/mypy-strict-2a6db2)](https://mypy-lang.org/)
 [![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
+[![Docker image](https://img.shields.io/docker/v/evandhoffman/gmail-archive?label=docker&sort=semver&logo=docker)](https://hub.docker.com/r/evandhoffman/gmail-archive)
+[![Image size](https://img.shields.io/docker/image-size/evandhoffman/gmail-archive?sort=semver)](https://hub.docker.com/r/evandhoffman/gmail-archive)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
 Ingest a Google Takeout Gmail mbox export into Postgres for permanent local
@@ -35,11 +37,22 @@ fixture data — you do not need a real mbox export to run this.
 ```bash
 git clone https://github.com/evanwtf/gmail-archive.git
 cd gmail-archive
-cp .env.example .env               # then set POSTGRES_PASSWORD
+cp .env.example .env                  # then set POSTGRES_PASSWORD
+uv run gmail-archive set-password     # then put the hash in .env
+docker compose pull                   # published image; no build needed
 docker compose up -d
 docker compose run --rm web migrate   # apply the schema before first ingest
 curl localhost:8000/healthz
 ```
+
+Images are published to
+[`evandhoffman/gmail-archive`](https://hub.docker.com/r/evandhoffman/gmail-archive)
+on every release tag. Version tags only — there is deliberately no `latest`,
+because the schema changes between versions and nothing migrates it for you.
+To build from source instead, `docker compose build web`.
+
+Without `set-password` the UI is served with **no authentication**, and compose
+publishes it on all interfaces.
 
 Then ingest something. Either a real export:
 
