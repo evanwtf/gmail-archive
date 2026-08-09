@@ -19,6 +19,11 @@ def _int_env(name: str, default: int) -> int:
     return int(raw)
 
 
+def _bool_env(name: str) -> bool:
+    """Truthy environment flag. Anything but 1/true/yes/on is false."""
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 @dataclass(frozen=True, slots=True)
 class Settings:
     database_url: str
@@ -31,6 +36,11 @@ class Settings:
     #: Empty means the UI is unauthenticated — which the app warns about
     #: loudly, because compose publishes it on 0.0.0.0.
     web_password_hash: str
+    #: Whether an `X-Forwarded-For` header may be believed when identifying a
+    #: client. Off by default: a forwarded header is trivially forged by
+    #: anyone talking to the app directly, so believing it without a proxy in
+    #: front turns the login throttle into decoration. See #47.
+    trust_proxy: bool = False
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -44,4 +54,5 @@ class Settings:
             log_level=os.environ.get("GMAIL_ARCHIVE_LOG_LEVEL", "INFO"),
             imap_password=os.environ.get("GMAIL_ARCHIVE_IMAP_PASSWORD", ""),
             web_password_hash=os.environ.get("GMAIL_ARCHIVE_WEB_PASSWORD_HASH", ""),
+            trust_proxy=_bool_env("GMAIL_ARCHIVE_TRUST_PROXY"),
         )

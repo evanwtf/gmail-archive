@@ -189,7 +189,33 @@ def _is_public(path: str) -> bool:
 
 
 def _client_id(request: Request) -> str:
-    return request.client.host if request.client else "unknown"
+    """Who to throttle, which is not always who connected (#47).
+
+    Behind a reverse proxy `request.client.host` is the proxy, so every user
+    shares one bucket and five bad guesses from anyone locks out everyone.
+    That turns a security control into a denial of service any device on the
+    network can trigger — and a TLS-terminating proxy is exactly the
+    deployment #40 recommends, so the control breaks precisely where it is
+    most wanted.
+
+    The fix has to be configuration rather than detection. `X-Forwarded-For`
+    is a request header like any other: trivially forged by anyone talking to
+    the app directly, and believing it without a proxy in front would let an
+    attacker mint a fresh identity per attempt and never be throttled at all.
+    That is strictly worse than the shared bucket. So it is off unless
+    `GMAIL_ARCHIVE_TRUST_PROXY` says otherwise.
+
+    When trusted, the **rightmost** entry is used. `X-Forwarded-For` reads
+    `client, proxy1, proxy2` with each hop appending the address that spoke to
+    it, so with one trusted proxy the last entry is the one that proxy
+    observed — the only entry in the list a client could not have written.
+    """
+    direct = request.client.host if request.client else "unknown"
+    if not Settings.from_env().trust_proxy:
+        return direct
+    forwarded = request.headers.get("x-forwarded-for", "")
+    hops = [hop.strip() for hop in forwarded.split(",") if hop.strip()]
+    return hops[-1] if hops else direct
 
 
 @app.middleware("http")

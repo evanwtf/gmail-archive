@@ -161,6 +161,22 @@ class LoginThrottle:
         self._lockout = lockout_seconds
         self._failures: dict[str, tuple[int, float]] = {}
 
+    def _prune(self, now: float) -> None:
+        """Drop entries that can no longer lock anyone out.
+
+        An entry older than the lockout window has no effect on any decision,
+        so keeping it is pure growth (#47). Without this the map gains one
+        entry per distinct client forever and drops one only on a successful
+        login — bounded and harmless on a LAN, unbounded anywhere else.
+
+        On write rather than on a timer: the map only grows on a failure, so
+        that is the only moment it can need pruning.
+        """
+        cutoff = now - self._lockout
+        stale = [key for key, (_, last) in self._failures.items() if last < cutoff]
+        for key in stale:
+            del self._failures[key]
+
     def locked_for(self, client: str, *, now: float | None = None) -> float:
         """Seconds remaining before this client may try again; 0 if allowed."""
         count, last = self._failures.get(client, (0, 0.0))
@@ -170,8 +186,10 @@ class LoginThrottle:
         return max(0.0, self._lockout - elapsed)
 
     def record_failure(self, client: str, *, now: float | None = None) -> None:
+        moment = now or time.time()
+        self._prune(moment)
         count, _ = self._failures.get(client, (0, 0.0))
-        self._failures[client] = (count + 1, now or time.time())
+        self._failures[client] = (count + 1, moment)
 
     def record_success(self, client: str) -> None:
         self._failures.pop(client, None)

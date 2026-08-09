@@ -8,11 +8,12 @@ without anyone remembering to protect it.
 from __future__ import annotations
 
 import time
+from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
 
-from gmail_archive.web.app import app
+from gmail_archive.web.app import _client_id, app
 from gmail_archive.web.auth import (
     SESSION_COOKIE,
     LoginThrottle,
@@ -265,3 +266,80 @@ class TestThrottle:
         throttle = LoginThrottle(threshold=1, lockout_seconds=30)
         throttle.record_failure("1.2.3.4")
         assert throttle.locked_for("5.6.7.8") == 0.0
+
+
+class TestThrottlePruning:
+    """The failure map does not grow forever (#47)."""
+
+    def test_entries_older_than_the_lockout_are_dropped(self) -> None:
+        throttle = LoginThrottle(threshold=5, lockout_seconds=30.0)
+        for i in range(100):
+            throttle.record_failure(f"10.0.0.{i}", now=1000.0)
+        assert len(throttle._failures) == 100
+
+        # One failure well after the window: everything stale goes with it.
+        throttle.record_failure("10.0.1.1", now=1000.0 + 31.0)
+        assert list(throttle._failures) == ["10.0.1.1"]
+
+    def test_pruning_does_not_release_a_client_still_locked_out(self) -> None:
+        # The dangerous way to get this wrong: prune so eagerly that an
+        # attacker mid-lockout is forgiven.
+        throttle = LoginThrottle(threshold=2, lockout_seconds=30.0)
+        throttle.record_failure("10.0.0.1", now=1000.0)
+        throttle.record_failure("10.0.0.1", now=1000.0)
+        assert throttle.locked_for("10.0.0.1", now=1005.0) > 0
+
+        throttle.record_failure("10.0.0.2", now=1005.0)
+        assert throttle.locked_for("10.0.0.1", now=1005.0) > 0
+
+
+class TestClientIdentification:
+    """Who gets throttled, behind a proxy and without one (#47)."""
+
+    def _request(self, headers: dict[str, str], host: str = "127.0.0.1") -> Any:
+        from starlette.datastructures import Headers
+
+        class _Client:
+            def __init__(self, h: str) -> None:
+                self.host = h
+
+        class _Request:
+            def __init__(self) -> None:
+                self.client = _Client(host)
+                self.headers = Headers(headers)
+
+        return _Request()
+
+    def test_forwarded_header_is_ignored_by_default(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Without a proxy the header is attacker-controlled. Believing it
+        # would let one client mint a fresh identity per attempt and never be
+        # throttled — strictly worse than the shared bucket it would fix.
+        monkeypatch.delenv("GMAIL_ARCHIVE_TRUST_PROXY", raising=False)
+        request = self._request({"x-forwarded-for": "1.2.3.4"})
+        assert _client_id(request) == "127.0.0.1"
+
+    def test_forwarded_header_is_used_when_trusted(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("GMAIL_ARCHIVE_TRUST_PROXY", "1")
+        request = self._request({"x-forwarded-for": "1.2.3.4"})
+        assert _client_id(request) == "1.2.3.4"
+
+    def test_the_rightmost_hop_wins(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # A client can write anything into the left of the list; only the
+        # entry the trusted proxy appended is worth anything.
+        monkeypatch.setenv("GMAIL_ARCHIVE_TRUST_PROXY", "1")
+        request = self._request({"x-forwarded-for": "9.9.9.9, 8.8.8.8, 1.2.3.4"})
+        assert _client_id(request) == "1.2.3.4"
+
+    def test_a_trusted_proxy_with_no_header_falls_back(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("GMAIL_ARCHIVE_TRUST_PROXY", "1")
+        assert _client_id(self._request({})) == "127.0.0.1"
+
+    def test_an_empty_header_falls_back(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("GMAIL_ARCHIVE_TRUST_PROXY", "1")
+        assert _client_id(self._request({"x-forwarded-for": " , "})) == "127.0.0.1"
