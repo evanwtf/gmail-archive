@@ -109,6 +109,25 @@ class WorkerResult:
     raw_prefix: bytes | None = None
 
 
+def _sequence_headers(
+    headers: list[tuple[str, str]],
+) -> list[tuple[str, int, str]]:
+    """Number repeated occurrences of each header name, so they can be keyed.
+
+    `(raw_sha256, name)` is not unique — a header may legitimately appear more
+    than once — and without an ordinal the second occurrence would collide with
+    the first and be dropped by `on conflict do nothing`. The number carries no
+    meaning beyond "the nth time this name appeared".
+    """
+    seen: dict[str, int] = {}
+    out: list[tuple[str, int, str]] = []
+    for name, value in headers:
+        seq = seen.get(name, 0)
+        seen[name] = seq + 1
+        out.append((name, seq, value))
+    return out
+
+
 def _worker_task(
     offset: int,
     length: int,
@@ -174,6 +193,11 @@ def _worker_task(
                 }
                 for i, a in enumerate(parsed.attachments)
             ],
+            # Allowlisted raw headers (#34). Sequenced here rather than in the
+            # parser because the ordinal is a storage concern — it exists to
+            # key repeated occurrences of one header name, not to say anything
+            # about the message.
+            "kept_headers": _sequence_headers(parsed.kept_headers),
             "parse_warnings": json.dumps(
                 [
                     {"code": w.code.value, "detail": w.detail}
@@ -398,6 +422,29 @@ def _write_batch(
                 " size_bytes, content_sha256, blob_sha256"
                 " from _staging_attachments"
                 " on conflict (raw_sha256, part_index) do nothing"
+            )
+
+        # ── message_headers ──────────────────────────────────────────────
+        header_rows = [
+            (m["raw_sha256"], name, seq, value)
+            for m in meta
+            for name, seq, value in m["kept_headers"]
+        ]
+        if header_rows:
+            conn.execute(
+                "create temporary table _staging_headers "
+                "(raw_sha256 char(64), name text, seq smallint, value text)"
+                " on commit drop"
+            )
+            with conn.cursor().copy(
+                "copy _staging_headers (raw_sha256, name, seq, value) from stdin"
+            ) as copy:
+                for header_row in header_rows:
+                    copy.write_row(header_row)
+            conn.execute(
+                "insert into message_headers (raw_sha256, name, seq, value)"
+                " select raw_sha256, name, seq, value from _staging_headers"
+                " on conflict do nothing"
             )
 
         # ── message_sightings ────────────────────────────────────────────
@@ -705,7 +752,9 @@ def ingest(
         # invasive, and the runbook covers it.
         if messages_new:
             logger.info("refreshing planner statistics")
-            conn.execute("analyze messages, blobs, labels, attachments")
+            conn.execute(
+                "analyze messages, blobs, labels, attachments, message_headers"
+            )
             conn.commit()
 
         # Mark the run as complete.

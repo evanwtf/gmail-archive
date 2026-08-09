@@ -19,3 +19,6 @@ __pycache__/
 htmlcov/
 
 .DS_Store
+
+# Test scratch, when /tmp is a RAM disk too small for the suite (see conftest).
+.tmp/

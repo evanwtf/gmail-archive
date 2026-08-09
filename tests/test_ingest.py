@@ -9,6 +9,7 @@ real database.
 from __future__ import annotations
 
 import os
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -178,12 +179,23 @@ class TestWriteBatch:
                     "body_html": "",
                     "search_text": "test hello",
                     "attachments": [],
+                    # `_write_batch` indexes this directly, as it does every
+                    # other key: the metadata dict is a contract between
+                    # `_worker_task` and `_write_batch`, and a `.get` default
+                    # here would let the two drift apart silently.
+                    "kept_headers": [("List-Id", 0, "Dev <dev.example.com>")],
                     "parse_warnings": [],
                     "blob_written": True,
                 },
             )
 
             _write_batch(conn, run_id, "/tmp/batch.mbox", [result])
+
+            header = conn.execute(
+                "select name, seq, value from message_headers where raw_sha256 = %s",
+                (sha256,),
+            ).fetchone()
+            assert header == ("List-Id", 0, "Dev <dev.example.com>")
 
             # Verify blob row.
             blob = conn.execute(
@@ -619,3 +631,91 @@ class TestEverythingTheParserEmitsIsStorable:
             f"'{pathology}' produced {report.failures} unstorable messages; "
             f"reproduce with: gmail-archive gen-fixture --pathologies {pathology}"
         )
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not DSN, reason="needs GMAIL_ARCHIVE_TEST_DATABASE_URL")
+class TestKeptHeadersReachThePlaceTheyAreQueriedFrom:
+    """`message_headers` is populated by a real ingest (#34).
+
+    The parser tests prove `parse()` produces the values. This proves they
+    survive the COPY, which is a separate claim and the one that has failed
+    three times before (#41).
+    """
+
+    MESSAGES = (
+        b"Subject: bulk\r\nFrom: news@amazon.com\r\n"
+        b"Date: Fri, 4 Apr 2025 09:00:00 +0000\r\n"
+        b"List-Unsubscribe: <https://amazon.example/u>\r\n"
+        b"List-Unsubscribe: <mailto:u@amazon.example>\r\n"
+        b"Precedence: bulk\r\nX-Mailer: BulkPlatform 4\r\n\r\nbuy\r\n",
+        b"Subject: human\r\nFrom: p@example.com\r\n"
+        b"Date: Fri, 4 Apr 2025 10:00:00 +0000\r\n"
+        b"User-Agent: Mutt/2.2\r\n\r\nhello\r\n",
+        # The live archive's year-2611 row, from its real headers (#27).
+        b"Subject: y2611\r\nFrom: q@example.com\r\n"
+        b"Date: Tue, 17 Sep 2611 16:00:10 GMT\r\n"
+        b"Received: from x by y; Fri, 4 Apr 2025 01:59:09 -0700\r\n\r\nweird\r\n",
+    )
+
+    def _ingest(self, tmp_path: Path, dsn: str) -> None:
+        mbox = tmp_path / "headers.mbox"
+        with mbox.open("wb") as fh:
+            for raw in self.MESSAGES:
+                fh.write(b"From MAILER-DAEMON@archive  Thu Jan  1 00:00:00 1970\r\n")
+                fh.write(raw)
+                fh.write(b"\n")
+        report = ingest(
+            Settings(
+                database_url=dsn,
+                blob_dir=tmp_path / "blobs",
+                workers=1,
+                batch_size=10,
+                log_level="WARNING",
+                web_password_hash="",
+                imap_password="",
+            ),
+            mbox,
+        )
+        assert report.failures == 0
+
+    def test_headers_land_and_the_2611_date_is_replaced(self, tmp_path: Path) -> None:
+        import psycopg
+
+        from conftest import scratch_database
+        from gmail_archive.migrate import migrate
+
+        assert DSN is not None
+        with scratch_database(DSN) as dsn:
+            migrate(dsn)
+            self._ingest(tmp_path, dsn)
+
+            with psycopg.connect(dsn) as conn:
+                rows = conn.execute(
+                    "select m.subject, h.name, h.seq, h.value"
+                    " from message_headers h join messages m using (raw_sha256)"
+                    " order by m.subject, h.name, h.seq"
+                ).fetchall()
+                dates: dict[str, datetime | None] = dict(
+                    conn.execute(
+                        "select subject, internal_date from messages"
+                    ).fetchall()
+                )
+
+        by_subject: dict[str, list[tuple[str, int, str]]] = {}
+        for subject, name, seq, value in rows:
+            by_subject.setdefault(subject, []).append((name, seq, value))
+
+        assert by_subject["bulk"] == [
+            ("List-Unsubscribe", 0, "<https://amazon.example/u>"),
+            ("List-Unsubscribe", 1, "<mailto:u@amazon.example>"),
+            ("Precedence", 0, "bulk"),
+            ("X-Mailer", 0, "BulkPlatform 4"),
+        ]
+        assert by_subject["human"] == [("User-Agent", 0, "Mutt/2.2")]
+        # No allowlisted headers at all means no rows, not an empty-string row.
+        assert "y2611" not in by_subject
+
+        # The whole point of #27: this used to sort above 22 years of mail.
+        assert dates["y2611"] is not None
+        assert dates["y2611"].year == 2025

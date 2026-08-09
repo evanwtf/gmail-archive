@@ -38,6 +38,49 @@ from io import StringIO
 # a tsvector is not always smaller than its input.
 SEARCH_TEXT_MAX_BYTES = 512_000
 
+#: Headers kept in queryable form beyond the ones with their own columns (#34).
+#:
+#: The blob holds every header, so nothing is lost either way — the question is
+#: only what can be queried without reading 277,000 files. These are the ones
+#: that settle "machine or person", which is the distinction the whole
+#: analytics side rests on and currently guesses at from address shape and
+#: Gmail categories. Both of those have holes: Gmail categories thin out in the
+#: early years, which is exactly where the human correspondence is, and
+#: `no-reply@` matching misses the bulk sender with a real-looking address.
+#:
+#: An allowlist rather than everything, because "every header" on this corpus
+#: is tens of millions of rows of `X-Spam-Status` and DKIM signatures nobody
+#: will ever query. Growing the list is a migration-free parser change; the
+#: table shape does not move.
+KEPT_HEADERS: tuple[str, ...] = (
+    # RFC 2369. Near-conclusive for bulk, and present on essentially all
+    # legitimate marketing and notification mail.
+    "List-Unsubscribe",
+    # Which list, not just that it is one — makes list traffic a dimension
+    # rather than a lump.
+    "List-Id",
+    # The pre-List-Unsubscribe convention. Matters for the 2004-2010 half of
+    # this archive, when the modern header was not yet universal.
+    "Precedence",
+    # RFC 3834: vacation responders, bounces, ticket robots.
+    "Auto-Submitted",
+    # Which client sent it — a human at a mail client versus a bulk platform,
+    # and incidentally a 22-year history of what the user ran.
+    "X-Mailer",
+    "User-Agent",
+    # Bounce address. Often differs from From: for bulk senders, and the
+    # mismatch is itself the signal.
+    "Return-Path",
+)
+
+#: Case-insensitive lookup to the canonical spelling above.
+_KEPT_HEADERS_LC = {name.lower(): name for name in KEPT_HEADERS}
+
+#: A single stored header value. Long enough for a real `List-Unsubscribe`
+#: with several URLs; short enough that a pathological header cannot turn one
+#: message into a megabyte of index.
+KEPT_HEADER_MAX_CHARS = 4_000
+
 _SURROGATES = re.compile("[\ud800-\udfff]")
 
 # mboxrd: a body line of `>*From ` carries one extra `>`. Anchored at line start.
@@ -61,6 +104,7 @@ class Warn(StrEnum):
     UNQUOTE_AMBIGUOUS = "unquote-ambiguous"
     ATTACHMENT_UNDECODABLE = "attachment-undecodable"
     STRUCTURE_UNPARSEABLE = "structure-unparseable"
+    DATE_FROM_RECEIVED = "date-from-received"
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,6 +142,8 @@ class ParsedMessage:
     body_html: str = ""
     search_text: str = ""
     attachments: list[Attachment] = field(default_factory=list)
+    kept_headers: list[tuple[str, str]] = field(default_factory=list)
+    """Allowlisted raw headers, `(canonical name, value)`. See `KEPT_HEADERS`."""
     parse_warnings: list[ParseWarning] = field(default_factory=list)
 
 
@@ -269,6 +315,94 @@ def _date(value: str | None, warnings: list[ParseWarning]) -> datetime | None:
     return parsed
 
 
+def _kept_headers(msg: email.message.Message) -> list[tuple[str, str]]:
+    """The allowlisted headers, in `KEPT_HEADERS` order (#34).
+
+    Raw values, not decoded. These are machine headers — URLs, list ids,
+    tokens — and RFC 2047 decoding a `List-Unsubscribe` would only corrupt it.
+    `_sanitize` still runs, because `text` cannot hold a NUL no matter where it
+    came from and a header is not exempt from that.
+
+    A header may legitimately appear more than once; each occurrence is kept,
+    which is why the return type is a list of pairs rather than a mapping.
+    """
+    out: list[tuple[str, str]] = []
+    for name in KEPT_HEADERS:
+        try:
+            values = msg.get_all(name)
+        except Exception:
+            continue
+        if not values:
+            continue
+        for value in values:
+            text = _header_str(value)
+            if text is None:
+                continue
+            text = strip_unstorable(text).strip()
+            if not text:
+                continue
+            out.append((_KEPT_HEADERS_LC[name.lower()], text[:KEPT_HEADER_MAX_CHARS]))
+    return out
+
+
+def _received_date(
+    msg: email.message.Message, warnings: list[ParseWarning]
+) -> datetime | None:
+    """The arrival time from the `Received` chain, or None (#27, option 3).
+
+    `Date:` is written by the sender and is therefore only as trustworthy as
+    the sender's clock and intentions. The live archive holds one message dated
+    2611 — the header genuinely says that, so it is not a parse bug — and with
+    newest-first as the default ordering, that one message sorts above 22 years
+    of real mail.
+
+    `Received:` is written by the receiving server, which had no reason to lie
+    and a working clock. Its date is after the final semicolon:
+
+        Received: from x by y; Fri, 4 Apr 2025 01:59:09 -0700
+
+    Headers are stored oldest-last, so `msg.get_all` returns the most recent
+    hop first — but the *first* one is the receiving end, which is the one
+    wanted here. Each is tried in turn, because a malformed hop in the middle
+    of a chain should not cost the whole fallback.
+
+    Deliberately not used as the primary date. `Date:` is what the message says
+    about itself and is right for the overwhelming majority; this only steps in
+    where `Date:` is missing or impossible, and says so with a warning so the
+    substitution stays visible rather than silently rewriting history.
+    """
+    try:
+        received = msg.get_all("Received")
+    except Exception:
+        return None
+    if not received:
+        return None
+    for hop in received:
+        value = _header_str(hop)
+        if value is None or ";" not in value:
+            continue
+        # rpartition: the timestamp follows the *last* semicolon, and the
+        # `from`/`by` clauses before it can contain their own.
+        _, _, stamp = value.rpartition(";")
+        stamp = stamp.strip()
+        if not stamp:
+            continue
+        # Its own warning list, not the message's. A junk hop is not a defect
+        # in the message: `Date:` already recorded whatever went wrong, and
+        # repeating it per hop would bury the real warning. The list is still
+        # inspected, because an implausible `Received` is no better than the
+        # implausible `Date:` it would be standing in for.
+        hop_warnings: list[ParseWarning] = []
+        candidate = _date(stamp, hop_warnings)
+        if candidate is None:
+            continue
+        if any(w.code is Warn.DATE_IMPLAUSIBLE for w in hop_warnings):
+            continue
+        warnings.append(ParseWarning(Warn.DATE_FROM_RECEIVED, stamp))
+        return candidate
+    return None
+
+
 def _part_text(part: email.message.Message, warnings: list[ParseWarning]) -> str:
     try:
         payload = part.get_payload(decode=True)
@@ -413,6 +547,18 @@ def parse(raw: bytes, *, already_unquoted: bool = False) -> ParsedMessage:
 
     parsed.labels = _labels(_header_str(msg.get("X-Gmail-Labels")), warnings)
     parsed.internal_date = _date(_header_str(msg.get("Date")), warnings)
+
+    # `Date:` is the sender's claim; `Received:` is the receiving server's
+    # record. Fall back only when the claim is absent or impossible, so the
+    # substitution is narrow and always flagged (#27).
+    if parsed.internal_date is None or any(
+        w.code is Warn.DATE_IMPLAUSIBLE for w in warnings
+    ):
+        from_received = _received_date(msg, warnings)
+        if from_received is not None:
+            parsed.internal_date = from_received
+
+    parsed.kept_headers = _kept_headers(msg)
 
     text_chunks: list[str] = []
     html_chunks: list[str] = []

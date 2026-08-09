@@ -7,7 +7,10 @@ module.
 
 from __future__ import annotations
 
+import os
+import shutil
 import sys
+import tempfile
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -18,6 +21,52 @@ import psycopg
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+
+
+#: Headroom a full run needs under `tmp_path`. The integration tests each build
+#: their own blob store, and `--pathologies` runs one per defect, so the suite
+#: writes far more than a unit-test suite has any right to.
+_TMPDIR_MIN_FREE_BYTES = 8 * 1024**3
+
+
+def _keep_temp_files_off_a_ram_disk() -> None:
+    """Point `tmp_path` at real disk when the default is too small.
+
+    `/tmp` is tmpfs on the reference machine — 7.5 GB, in RAM. pytest's
+    `tmp_path` lives under `tempfile.gettempdir()`, so a full suite run fills
+    it, and this is not hypothetical: it exhausted tmpfs and every test that
+    touched a file started failing with `OSError: [Errno 122]`. It also took
+    out the surrounding tooling, which had its own scratch space on the same
+    filesystem, and the disk it was really competing for had 158 GB free.
+
+    Called at import time, before pytest builds its temp factory, because the
+    factory resolves `TMPDIR` once and keeps it.
+
+    Nothing happens if `TMPDIR` is already set or `--basetemp` was passed —
+    an explicit choice wins, and CI makes one.
+    """
+    if os.environ.get("TMPDIR") or "--basetemp" in sys.argv:
+        return
+    current = Path(tempfile.gettempdir())
+    try:
+        if shutil.disk_usage(current).free >= _TMPDIR_MIN_FREE_BYTES:
+            return
+    except OSError:
+        return
+    repo_scratch = Path(__file__).resolve().parent.parent / ".tmp"
+    for candidate in (Path("/var/tmp"), repo_scratch):
+        try:
+            candidate.mkdir(parents=True, exist_ok=True)
+            if shutil.disk_usage(candidate).free < _TMPDIR_MIN_FREE_BYTES:
+                continue
+        except OSError:
+            continue
+        os.environ["TMPDIR"] = str(candidate)
+        tempfile.tempdir = None  # Drop the cached value from any earlier call.
+        return
+
+
+_keep_temp_files_off_a_ram_disk()
 
 
 #: A three-message mbox, generated rather than committed.

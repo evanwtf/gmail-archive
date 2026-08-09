@@ -23,6 +23,7 @@ from hypothesis import strategies as st
 
 from gmail_archive.fixtures import Pathology, generate
 from gmail_archive.parser import (
+    KEPT_HEADER_MAX_CHARS,
     SEARCH_TEXT_MAX_BYTES,
     ParsedMessage,
     Warn,
@@ -556,3 +557,128 @@ class TestRequoteIsShared:
         import gmail_archive.export as export_module
 
         assert not hasattr(export_module, "_requote")
+
+
+class TestKeptHeaders:
+    """The allowlisted headers reach `ParsedMessage` in queryable form (#34)."""
+
+    def _parse(self, extra: str) -> ParsedMessage:
+        raw = (f"Subject: s\r\nFrom: a@example.com\r\n{extra}\r\n\r\nbody\r\n").encode()
+        return parse(raw, already_unquoted=True)
+
+    def test_the_bulk_headers_are_kept(self) -> None:
+        parsed = self._parse(
+            "List-Unsubscribe: <https://example.com/u>\r\n"
+            "List-Id: Dev <dev.example.com>\r\n"
+            "Precedence: bulk\r\n"
+            "Auto-Submitted: auto-generated"
+        )
+        assert dict((name, value) for name, value in parsed.kept_headers) == {
+            "List-Unsubscribe": "<https://example.com/u>",
+            "List-Id": "Dev <dev.example.com>",
+            "Precedence": "bulk",
+            "Auto-Submitted": "auto-generated",
+        }
+
+    def test_headers_outside_the_allowlist_are_not_kept(self) -> None:
+        # The blob still has them. The point of the allowlist is that
+        # `X-Spam-Status` and DKIM signatures do not become tens of millions
+        # of rows nobody queries.
+        parsed = self._parse("X-Spam-Status: No\r\nDKIM-Signature: v=1; a=rsa")
+        assert parsed.kept_headers == []
+
+    def test_the_name_is_canonicalised_not_echoed(self) -> None:
+        # Senders spell these every way. A query for "List-Id" must not miss
+        # the ones that wrote "list-id".
+        parsed = self._parse("list-unsubscribe: <https://example.com/u>")
+        assert [n for n, _ in parsed.kept_headers] == ["List-Unsubscribe"]
+
+    def test_a_repeated_header_keeps_every_occurrence(self) -> None:
+        parsed = self._parse(
+            "List-Unsubscribe: <https://example.com/a>\r\n"
+            "List-Unsubscribe: <mailto:u@example.com>"
+        )
+        assert len(parsed.kept_headers) == 2
+
+    def test_a_value_is_bounded(self) -> None:
+        parsed = self._parse("X-Mailer: " + "x" * 50_000)
+        assert len(parsed.kept_headers[0][1]) == KEPT_HEADER_MAX_CHARS
+
+    def test_a_nul_in_a_header_does_not_reach_the_database(self) -> None:
+        # Postgres `text` cannot hold one, and a header is not exempt from
+        # that just because it is machine-written.
+        parsed = self._parse("Precedence: bu\x00lk")
+        assert parsed.kept_headers == [("Precedence", "bulk")]
+
+    def test_a_message_with_none_of_them_is_simply_empty(self) -> None:
+        assert self._parse("To: b@example.com").kept_headers == []
+
+
+class TestReceivedDateFallback:
+    """`Received:` stands in when `Date:` is missing or impossible (#27)."""
+
+    def _parse(self, headers: str) -> ParsedMessage:
+        return parse(
+            f"Subject: s\r\nFrom: a@example.com\r\n{headers}\r\n\r\nbody\r\n".encode(),
+            already_unquoted=True,
+        )
+
+    def test_a_sane_date_header_wins_and_received_is_not_consulted(self) -> None:
+        # The fallback must stay narrow. `Date:` is what the message says about
+        # itself and is right for the overwhelming majority.
+        parsed = self._parse(
+            "Date: Fri, 4 Apr 2025 09:00:00 +0000\r\n"
+            "Received: from x by y; Sat, 5 Apr 2025 09:00:00 +0000"
+        )
+        assert parsed.internal_date is not None
+        assert parsed.internal_date.day == 4
+        assert not any(w.code is Warn.DATE_FROM_RECEIVED for w in parsed.parse_warnings)
+
+    def test_a_missing_date_falls_back(self) -> None:
+        parsed = self._parse("Received: from x by y; Fri, 4 Apr 2025 01:59:09 -0700")
+        assert parsed.internal_date is not None
+        assert parsed.internal_date.year == 2025
+        assert any(w.code is Warn.DATE_FROM_RECEIVED for w in parsed.parse_warnings)
+
+    def test_the_year_2611_message_gets_a_real_date(self) -> None:
+        # The live archive's one implausible row, reproduced from its actual
+        # headers. The `Date:` is genuinely what the sender wrote, so this is
+        # not a parse bug — but with newest-first as the default ordering it
+        # sorted above 22 years of real mail.
+        parsed = self._parse(
+            "Date: Tue, 17 Sep 2611 16:00:10 GMT\r\n"
+            "Received: from x by y; Fri, 4 Apr 2025 01:59:09 -0700"
+        )
+        assert parsed.internal_date is not None
+        assert parsed.internal_date.year == 2025
+        # Both facts are recorded: the header was junk, and what replaced it.
+        codes = {w.code for w in parsed.parse_warnings}
+        assert Warn.DATE_IMPLAUSIBLE in codes
+        assert Warn.DATE_FROM_RECEIVED in codes
+
+    def test_the_timestamp_after_the_last_semicolon_is_the_one_used(self) -> None:
+        # `from`/`by` clauses contain their own semicolons.
+        parsed = self._parse(
+            "Received: from x (a; b) by y with ESMTP id 7; "
+            "Fri, 4 Apr 2025 01:59:09 -0700"
+        )
+        assert parsed.internal_date is not None
+        assert parsed.internal_date.year == 2025
+
+    def test_an_implausible_received_is_no_better_and_is_refused(self) -> None:
+        parsed = self._parse("Received: from x by y; Tue, 17 Sep 2611 16:00:10 GMT")
+        assert parsed.internal_date is None
+
+    def test_a_junk_hop_does_not_cost_the_whole_chain(self) -> None:
+        parsed = self._parse(
+            "Received: from x by y; not a date at all\r\n"
+            "Received: from p by q; Fri, 4 Apr 2025 01:59:09 -0700"
+        )
+        assert parsed.internal_date is not None
+        assert parsed.internal_date.year == 2025
+
+    def test_no_received_at_all_stays_none(self) -> None:
+        assert self._parse("To: b@example.com").internal_date is None
+
+    def test_a_received_without_a_semicolon_is_skipped(self) -> None:
+        assert self._parse("Received: from x by y").internal_date is None
