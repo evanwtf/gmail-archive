@@ -47,7 +47,7 @@ services:
       GMAIL_ARCHIVE_WEB_PASSWORD_HASH: ${GMAIL_ARCHIVE_WEB_PASSWORD_HASH:-}
       # Built from POSTGRES_PASSWORD; the app reaches the server as
       # `postgres:5432` over the compose network.
-      GMAIL_ARCHIVE_DATABASE_URL: postgresql://gmail_archive:${POSTGRES_PASSWORD:-}@postgres:5432/gmail_archive
+      GMAIL_ARCHIVE_DATABASE_URL: postgresql://gmail_archive:${POSTGRES_PASSWORD:-}@postgres:5432/${GMAIL_ARCHIVE_DB:-gmail_archive}
     volumes:
       - ${GMAIL_ARCHIVE_BLOB_HOST_PATH:-./data/blobs}:/blobs
       # Read-only, and over the copy baked into the image: otherwise `migrate`
@@ -113,7 +113,7 @@ services:
       # upgrade rather than a fresh install.
       - pgdata:/var/lib/postgresql
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U gmail_archive -d gmail_archive"]
+      test: ["CMD-SHELL", "pg_isready -U gmail_archive -d ${GMAIL_ARCHIVE_DB:-gmail_archive}"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -136,7 +136,7 @@ services:
       GMAIL_ARCHIVE_LOG_LEVEL: ${GMAIL_ARCHIVE_LOG_LEVEL:-INFO}
       GMAIL_ARCHIVE_WORKERS: ${GMAIL_ARCHIVE_WORKERS:-}
       GMAIL_ARCHIVE_BATCH_SIZE: ${GMAIL_ARCHIVE_BATCH_SIZE:-}
-      GMAIL_ARCHIVE_DATABASE_URL: postgresql://gmail_archive:${POSTGRES_PASSWORD:-}@postgres:5432/gmail_archive
+      GMAIL_ARCHIVE_DATABASE_URL: postgresql://gmail_archive:${POSTGRES_PASSWORD:-}@postgres:5432/${GMAIL_ARCHIVE_DB:-gmail_archive}
     volumes:
       # Read-only: the Takeout export is the only copy until ingest finishes,
       # and nothing in this project has a reason to write to it.
@@ -167,7 +167,7 @@ services:
     environment:
       GMAIL_ARCHIVE_BLOB_DIR: /blobs
       GMAIL_ARCHIVE_LOG_LEVEL: ${GMAIL_ARCHIVE_LOG_LEVEL:-INFO}
-      GMAIL_ARCHIVE_DATABASE_URL: postgresql://gmail_archive:${POSTGRES_PASSWORD:-}@postgres:5432/gmail_archive
+      GMAIL_ARCHIVE_DATABASE_URL: postgresql://gmail_archive:${POSTGRES_PASSWORD:-}@postgres:5432/${GMAIL_ARCHIVE_DB:-gmail_archive}
       # Passed through explicitly — the whole bug in #25 was that setting this
       # in .env never reached the container. Not `:?`: compose interpolates the
       # entire file regardless of which profiles are active, so a required

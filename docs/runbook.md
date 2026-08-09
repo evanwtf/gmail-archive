@@ -347,16 +347,37 @@ new hashing, independent of the old one.
 
 ### Cutting over
 
-Only after verify passes. Point `.env` at the new store and restart:
+Only after verify passes. Two lines of `.env`, then restart:
 
 ```
 GMAIL_ARCHIVE_BLOB_HOST_PATH=/path/to/blobs-v2
+GMAIL_ARCHIVE_DB=gmail_archive_v2
 ```
 
-Keep the old database and blob store until you have used the new archive for a
-while. Reverting is the same line changed back. Once you are satisfied, the old
-store is `rm -rf` — and because the two stores never shared a hash, there is no
-risk of deleting something the new one points at.
+```bash
+docker compose up -d web
+```
+
+**If you ran the ingest outside the container, fix ownership first.** The
+container runs as uid 65532 and the blobs will be owned by you, mode 0600, so
+it cannot read a single one — and the failure is quiet: pages render with
+headers and no body, because a missing blob is deliberately not a 404.
+
+```bash
+sudo chown -R 65532:65532 /path/to/blobs-v2
+```
+
+Verify the container really moved, rather than trusting the restart:
+
+```bash
+docker compose exec web env | grep -o "5432/[a-z_0-9]*"
+```
+
+Keep the old database and blob store until you have used the new archive in
+anger. Reverting is those same two lines changed back — nothing was destroyed,
+so there is nothing to restore. Once you are satisfied, drop the old database
+and `rm -rf` the old store; because the two stores never shared a hash, there
+is no risk of deleting something the new one points at.
 
 ### What to expect
 
