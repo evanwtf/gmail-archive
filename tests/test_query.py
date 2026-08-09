@@ -383,11 +383,13 @@ class TestListLabels:
                 (sha256,),
             )
             conn.execute(
-                "insert into labels (raw_sha256, label) values (%s, 'Inbox')",
+                "insert into labels (raw_sha256, label, account_id)"
+                " values (%s, 'Inbox', (select min(id) from accounts))",
                 (sha256,),
             )
             conn.execute(
-                "insert into labels (raw_sha256, label) values (%s, 'Important')",
+                "insert into labels (raw_sha256, label, account_id)"
+                " values (%s, 'Important', (select min(id) from accounts))",
                 (sha256,),
             )
 
@@ -485,7 +487,8 @@ class TestGetMessageFull:
                 (sha256,),
             )
             conn.execute(
-                "insert into labels (raw_sha256, label) values (%s, 'Inbox')",
+                "insert into labels (raw_sha256, label, account_id)"
+                " values (%s, 'Inbox', (select min(id) from accounts))",
                 (sha256,),
             )
 

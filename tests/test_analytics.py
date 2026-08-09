@@ -132,7 +132,8 @@ class TestClassification:
         )
         for label in labels:
             conn.execute(  # type: ignore[attr-defined]
-                "insert into labels (raw_sha256, label) values (%s, %s)"
+                "insert into labels (raw_sha256, label, account_id)"
+                " values (%s, %s, (select min(id) from accounts))"
                 " on conflict do nothing",
                 (sha, label),
             )

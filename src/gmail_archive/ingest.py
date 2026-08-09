@@ -232,9 +232,32 @@ def _worker_task_tuple(
     return _worker_task(*args)
 
 
+def resolve_account(conn: psycopg.Connection[object], address: str | None) -> int:
+    """The account id to attribute this run to, creating the row if needed.
+
+    `None` means the default account — the one migration 0006 created for
+    everything that predates accounts existing. Keeping that path means a
+    single-account user never has to learn the flag, while a second export
+    is a one-word difference rather than a schema decision.
+    """
+    if address is None:
+        row = conn.execute("select min(id) from accounts").fetchone()
+        if row is not None and row[0] is not None:  # type: ignore[index]
+            return int(row[0])  # type: ignore[index]
+        address = "default"
+    row = conn.execute(
+        "insert into accounts (address) values (%s)"
+        " on conflict (address) do update set address = excluded.address"
+        " returning id",
+        (address,),
+    ).fetchone()
+    return int(row[0])  # type: ignore[index]
+
+
 def _ensure_run(
     conn: psycopg.Connection[object],
     source_path: str,
+    account_id: int | None = None,
 ) -> tuple[int, int]:
     """Find or create an ingest run. Returns (run_id, checkpoint_offset)."""
     # Look for an incomplete run for this source file.
@@ -257,9 +280,9 @@ def _ensure_run(
 
     # Create a new run.
     row = conn.execute(
-        "insert into ingest_runs (source_path, status) "
-        "values (%s, 'running') returning id",
-        (source_path,),
+        "insert into ingest_runs (source_path, status, account_id) "
+        "values (%s, 'running', %s) returning id",
+        (source_path, account_id),
     ).fetchone()
     run_id = int(row[0])  # type: ignore[index]
     logger.info("created run %d for %s", run_id, source_path)
@@ -271,6 +294,7 @@ def _write_batch(
     run_id: int,
     source_path: str,
     results: list[WorkerResult],
+    account_id: int,
 ) -> None:
     """Write a batch of worker results to Postgres in a single transaction."""
     successes = [r for r in results if r.success and r.metadata is not None]
@@ -365,23 +389,35 @@ def _write_batch(
             )
 
         # ── labels ──────────────────────────────────────────────────────
-        label_rows = [(m["raw_sha256"], label) for m in meta for label in m["labels"]]
+        label_rows = [
+            (m["raw_sha256"], label, account_id) for m in meta for label in m["labels"]
+        ]
         if label_rows:
             conn.execute(
                 "create temporary table _staging_labels "
-                "(raw_sha256 char(64), label text)"
+                "(raw_sha256 char(64), label text, account_id bigint)"
                 " on commit drop"
             )
             with conn.cursor().copy(
-                "copy _staging_labels (raw_sha256, label) from stdin"
+                "copy _staging_labels (raw_sha256, label, account_id) from stdin"
             ) as copy:
                 for label_row in label_rows:
                     copy.write_row(label_row)
             conn.execute(
-                "insert into labels (raw_sha256, label)"
-                " select raw_sha256, label from _staging_labels"
+                "insert into labels (raw_sha256, label, account_id)"
+                " select raw_sha256, label, account_id from _staging_labels"
                 " on conflict do nothing"
             )
+
+        # ── message_accounts ─────────────────────────────────────────────
+        # Which account saw this message. Separate from labels because a
+        # message can be in an account with no labels at all.
+        conn.execute(
+            "insert into message_accounts (raw_sha256, account_id)"
+            " select unnest(%s::char(64)[]), %s"
+            " on conflict do nothing",
+            ([m["raw_sha256"] for m in meta], account_id),
+        )
 
         # ── attachments ──────────────────────────────────────────────────
         attach_rows = [
@@ -535,6 +571,7 @@ def ingest(
     *,
     workers: int | None = None,
     batch_size: int | None = None,
+    account: str | None = None,
 ) -> IngestReport:
     """Ingest an mbox file into Postgres.
 
@@ -543,6 +580,9 @@ def ingest(
         mbox_path: Path to the mbox file.
         workers: Worker count (defaults to settings.workers).
         batch_size: Messages per batch (defaults to settings.batch_size).
+        account: Email address this export belongs to (#39). Defaults to the
+            account migration 0006 created for everything that predates
+            accounts, so a single-account user never meets the flag.
 
     Returns:
         An IngestReport summarising the run.
@@ -594,7 +634,8 @@ def ingest(
     messages_new = 0
     failures = 0
     try:
-        run_id, checkpoint = _ensure_run(conn, source_path)
+        account_id = resolve_account(conn, account)
+        run_id, checkpoint = _ensure_run(conn, source_path, account_id)
 
         # Filter to messages after the checkpoint.
         pending = [
@@ -690,7 +731,7 @@ def ingest(
 
                 # Flush batch at batch_size boundary or at end.
                 if len(batch) >= n_batch:
-                    _write_batch(conn, run_id, source_path, batch)
+                    _write_batch(conn, run_id, source_path, batch, account_id)
                     conn.commit()
                     # The batch is durable, so every result seen so far is
                     # durable, and the low-water mark is safe to record.
@@ -726,7 +767,7 @@ def ingest(
 
         # Flush remaining batch.
         if batch:
-            _write_batch(conn, run_id, source_path, batch)
+            _write_batch(conn, run_id, source_path, batch, account_id)
             conn.commit()
             _checkpoint(
                 conn,

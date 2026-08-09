@@ -134,11 +134,24 @@ def migrate() -> None:
 @click.option(
     "--batch-size", default=None, type=int, help="Messages per batch (default: 1000)"
 )
-def ingest(mbox: Path, workers: int | None, batch_size: int | None) -> None:
+@click.option(
+    "--account",
+    default=None,
+    help="Email address this export belongs to. Omit for a single-account archive.",
+)
+def ingest(
+    mbox: Path, workers: int | None, batch_size: int | None, account: str | None
+) -> None:
     """Ingest an mbox file into Postgres.
 
     Resumable and idempotent: re-running after a kill picks up where it left
     off, and re-ingesting the same file twice adds nothing.
+
+    `--account` attributes the export to a Gmail account, created on first
+    use. Without it everything lands in the default account, which is the
+    right answer for one mailbox. It matters for a second: `raw_sha256` is
+    the primary key, so a message in two accounts is one row, and the account
+    is the only thing recording that it arrived twice.
     """
     from gmail_archive.ingest import IngestAlreadyRunningError
     from gmail_archive.ingest import ingest as _ingest
@@ -154,6 +167,7 @@ def ingest(mbox: Path, workers: int | None, batch_size: int | None) -> None:
             mbox,
             workers=workers,
             batch_size=batch_size,
+            account=account,
         )
     except IngestAlreadyRunningError as exc:
         # A refusal, not a crash: two ingests at once corrupt each other.

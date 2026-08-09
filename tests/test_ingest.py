@@ -11,8 +11,12 @@ from __future__ import annotations
 import os
 from datetime import datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
+
+if TYPE_CHECKING:
+    import psycopg
 
 from gmail_archive.config import Settings
 from gmail_archive.fixtures.generator import Pathology, generate
@@ -41,6 +45,15 @@ def _settings(tmp_path: Path) -> Settings:
         web_password_hash="",
         imap_password="",
     )
+
+
+def _default_account(conn: psycopg.Connection[object]) -> int:
+    """The account id every pre-#39 row was attributed to by migration 0006."""
+    row = conn.execute("select min(id) from accounts").fetchone()
+    assert row is not None
+    account_id = next(iter(row))  # type: ignore[call-overload]
+    assert account_id is not None
+    return int(account_id)
 
 
 def _mbox(tmp_path: Path, lines: list[bytes]) -> Path:
@@ -189,7 +202,9 @@ class TestWriteBatch:
                 },
             )
 
-            _write_batch(conn, run_id, "/tmp/batch.mbox", [result])
+            _write_batch(
+                conn, run_id, "/tmp/batch.mbox", [result], _default_account(conn)
+            )
 
             header = conn.execute(
                 "select name, seq, value from message_headers where raw_sha256 = %s",
@@ -257,7 +272,9 @@ class TestWriteBatch:
                 raw_prefix=b"From: bad\xffdata\n\nbody",
             )
 
-            _write_batch(conn, run_id, "/tmp/fail.mbox", [result])
+            _write_batch(
+                conn, run_id, "/tmp/fail.mbox", [result], _default_account(conn)
+            )
 
             failed = conn.execute(
                 "select byte_offset, error, truncated from failed_messages "
@@ -719,3 +736,127 @@ class TestKeptHeadersReachThePlaceTheyAreQueriedFrom:
         # The whole point of #27: this used to sort above 22 years of mail.
         assert dates["y2611"] is not None
         assert dates["y2611"].year == 2025
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not DSN, reason="needs GMAIL_ARCHIVE_TEST_DATABASE_URL")
+class TestAccountAttribution:
+    """A message records which account it arrived in (#39).
+
+    Schema-level only — there is no switcher yet. It exists now because it is
+    the one part of #39 that cannot be added after the #52 rebuild without
+    another one: label rows are written from the per-account export they came
+    from, and nothing could later recover which account a label belonged to.
+    """
+
+    def _mbox(self, tmp_path: Path, name: str, subject: str) -> Path:
+        path = tmp_path / f"{name}.mbox"
+        with path.open("wb") as fh:
+            fh.write(b"From MAILER-DAEMON@archive  Thu Jan  1 00:00:00 1970\r\n")
+            fh.write(
+                f"Subject: {subject}\r\nFrom: a@example.com\r\n"
+                f"Date: Fri, 4 Apr 2025 09:00:00 +0000\r\n"
+                f"X-Gmail-Labels: Inbox,Starred\r\n\r\nshared body\r\n".encode()
+            )
+            fh.write(b"\n")
+        return path
+
+    def _settings(self, tmp_path: Path, dsn: str, tag: str) -> Settings:
+        return Settings(
+            database_url=dsn,
+            blob_dir=tmp_path / f"blobs-{tag}",
+            workers=1,
+            batch_size=10,
+            log_level="WARNING",
+            web_password_hash="",
+            imap_password="",
+        )
+
+    def test_no_account_flag_uses_the_default_account(self, tmp_path: Path) -> None:
+        import psycopg
+
+        from conftest import scratch_database
+        from gmail_archive.migrate import migrate
+
+        assert DSN is not None
+        with scratch_database(DSN) as dsn:
+            migrate(dsn)
+            ingest(
+                self._settings(tmp_path, dsn, "d"),
+                self._mbox(tmp_path, "d", "solo"),
+            )
+            with psycopg.connect(dsn) as conn:
+                accounts = conn.execute("select address from accounts").fetchall()
+                linked = conn.execute(
+                    "select count(*) from message_accounts"
+                ).fetchone()
+
+        # A single-mailbox user should never have to learn the flag exists.
+        assert accounts == [("default",)]
+        assert linked == (1,)
+
+    def test_the_same_message_in_two_accounts_is_one_row_but_two_links(
+        self, tmp_path: Path
+    ) -> None:
+        import psycopg
+
+        from conftest import scratch_database
+        from gmail_archive.migrate import migrate
+
+        assert DSN is not None
+        with scratch_database(DSN) as dsn:
+            migrate(dsn)
+            # Byte-identical mail, as happens when one message is addressed to
+            # two of your own addresses. This is the case that made the schema
+            # urgent: it used to merge silently and unrecoverably.
+            first = self._mbox(tmp_path, "one", "shared")
+            second = self._mbox(tmp_path, "two", "shared")
+            ingest(self._settings(tmp_path, dsn, "1"), first, account="a@example.com")
+            ingest(self._settings(tmp_path, dsn, "2"), second, account="b@example.com")
+
+            with psycopg.connect(dsn) as conn:
+                messages = conn.execute("select count(*) from messages").fetchone()
+                links = conn.execute(
+                    "select a.address from message_accounts ma"
+                    " join accounts a on a.id = ma.account_id"
+                    " order by a.address"
+                ).fetchall()
+                labels = conn.execute(
+                    "select a.address, l.label from labels l"
+                    " join accounts a on a.id = l.account_id"
+                    " order by a.address, l.label"
+                ).fetchall()
+
+        # Content-addressed: one row, as it should be.
+        assert messages == (1,)
+        # But both accounts saw it, and that is now recorded.
+        assert links == [("a@example.com",), ("b@example.com",)]
+        # And the labels exist per account rather than collapsing — the thing
+        # the old (raw_sha256, label) key made impossible to represent.
+        assert labels == [
+            ("a@example.com", "Inbox"),
+            ("a@example.com", "Starred"),
+            ("b@example.com", "Inbox"),
+            ("b@example.com", "Starred"),
+        ]
+
+    def test_the_run_records_its_account(self, tmp_path: Path) -> None:
+        import psycopg
+
+        from conftest import scratch_database
+        from gmail_archive.migrate import migrate
+
+        assert DSN is not None
+        with scratch_database(DSN) as dsn:
+            migrate(dsn)
+            ingest(
+                self._settings(tmp_path, dsn, "r"),
+                self._mbox(tmp_path, "r", "run"),
+                account="c@example.com",
+            )
+            with psycopg.connect(dsn) as conn:
+                row = conn.execute(
+                    "select a.address from ingest_runs r"
+                    " join accounts a on a.id = r.account_id"
+                ).fetchone()
+        assert row == ("c@example.com",)
