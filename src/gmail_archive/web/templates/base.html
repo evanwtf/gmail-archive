@@ -42,7 +42,9 @@
     {% if not authenticated %}
     <span class="auth-warning" title="Anyone who can reach this port can read the archive. Run: gmail-archive set-password">NO PASSWORD SET</span>
     {% else %}
-    <a class="topnav-item" href="/logout" title="Sign out">Sign out</a>
+    <form class="topnav-logout" method="post" action="/logout">
+      <button class="topnav-item" type="submit" title="Sign out">Sign out</button>
+    </form>
     {% endif %}
     {# <details> rather than a scripted modal: it needs no JavaScript, works
        with the keyboard for free, and cannot break if a script fails. #}

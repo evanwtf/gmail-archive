@@ -166,9 +166,12 @@ class TestLoginFlow:
 
     def test_a_session_then_reaches_protected_pages(self, secured: TestClient) -> None:
         secured.post("/login", data={"password": PASSWORD, "next": "/"})
-        # 503 rather than 303: past the auth gate, into the database call.
+        # The claim is "past the auth gate", so the assertion is "not bounced
+        # to login". It used to assert 503 — the database being unreachable —
+        # which made it fail whenever the database happened to be up, i.e.
+        # exactly in CI's integration step.
         response = secured.get("/", headers={"Accept": "text/html"})
-        assert response.status_code == 503
+        assert response.status_code != 303
 
     def test_the_wrong_password_is_rejected(self, secured: TestClient) -> None:
         response = secured.post("/login", data={"password": "nope", "next": "/"})
@@ -177,8 +180,24 @@ class TestLoginFlow:
 
     def test_logout_clears_the_session(self, secured: TestClient) -> None:
         secured.post("/login", data={"password": PASSWORD, "next": "/"})
-        secured.get("/logout")
+        secured.post("/logout")
         assert secured.get("/", headers={"Accept": "text/html"}).status_code == 303
+
+    def test_logout_refuses_a_get(self, secured: TestClient) -> None:
+        """A state-changing GET is the precondition for CSRF (#48).
+
+        `<img src=".../logout">` on any page you happened to visit used to
+        sign you out. It is only a nuisance — nothing can be read and the fix
+        is to log in again — but this was the app's one state-changing GET,
+        and removing it makes "every GET here is safe" a property rather than
+        a coincidence.
+        """
+        secured.post("/login", data={"password": PASSWORD, "next": "/"})
+        assert secured.get("/logout").status_code == 405
+        # And the session survives the attempt. Asserted as "not bounced to
+        # login" rather than a specific code, because whether the page then
+        # renders or reports the database down is not what this is about.
+        assert secured.get("/", headers={"Accept": "text/html"}).status_code != 303
 
     @pytest.mark.parametrize(
         "target",

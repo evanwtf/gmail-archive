@@ -210,13 +210,15 @@ an in-repo runner. Decisions are recorded in [docs/adr/](docs/adr/).
 
 ## Known defects
 
+Every entry in this table used to be closed — the list had gone stale while
+the README still told people to read it before trusting the project. These are
+the open ones, checked against the tracker.
+
 | What | Effect | Issue |
 |---|---|---|
-| Ingest never unquotes mboxrd | `raw_sha256`, blobs and `body_text` all carry `>From ` quoting, contrary to ADR-002. Fixing it changes every hash — a re-ingest, not a migration | [#10](https://github.com/evanwtf/gmail-archive/issues/10) |
-| Resume checkpoint uses the last worker to finish, not the furthest offset | An interrupted-and-resumed ingest can skip messages silently | [#12](https://github.com/evanwtf/gmail-archive/issues/12) |
-| IMAP login rejects every credential | The IMAP server is unusable | [#11](https://github.com/evanwtf/gmail-archive/issues/11) |
-| `imap-backfill` renumbers UIDs by position | Cannot be re-run after a second ingest; aborts on a primary-key collision | [#13](https://github.com/evanwtf/gmail-archive/issues/13) |
-| Undated messages (~2.7%) are unreachable by browsing | Stored and searchable, but the keyset walk stops before them | [#15](https://github.com/evanwtf/gmail-archive/issues/15) |
+| `SELECT` in IMAP materialises the whole folder, twice | `SELECT "All Mail"` builds ~554k objects before answering. Slow, and memory scales with the folder rather than the request | [#45](https://github.com/evanwtf/gmail-archive/issues/45) |
+| Login throttle is one shared bucket, and never shrinks | Behind a proxy every client shares one failure count, so one wrong password throttles everyone. The map also grows without bound | [#47](https://github.com/evanwtf/gmail-archive/issues/47) |
+| `GmailApiSource` ignores 403 rate limits | The alternative (non-Takeout) source aborts instead of backing off. Does not affect mbox ingest, which is the supported path | [#23](https://github.com/evanwtf/gmail-archive/issues/23) |
 
 Full list, with the test and CI gaps behind them, at the end of
 [docs/progress.md](docs/progress.md#post-build-review--2026-08-06).

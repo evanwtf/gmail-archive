@@ -115,4 +115,9 @@
     RFC822 source, headers and all.</li>
   <li><a href="/stats">Statistics</a> has archive-wide totals and the date
     range.</li>
+  <li><strong>Sign out forgets this device, it does not revoke the
+    session.</strong> The cookie is deleted here, but the token itself stays
+    valid until it expires — it is a signature over an expiry, not a record on
+    the server, which is what lets the archive hold no session state at all.
+    On another device, sign out there too.</li>
 </ul>

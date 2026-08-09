@@ -793,6 +793,18 @@ a { color: inherit; text-decoration: none; }
   white-space: nowrap;
 }
 .topnav-item:hover { background: #eaecef; color: var(--text); }
+
+/* Sign out is a POST form now, not a link (#48), so the button has to be
+   talked out of looking like a button. Everything the anchors get for free —
+   font, cursor, background — has to be said explicitly here. */
+.topnav-logout { display: inline-flex; margin: 0; }
+button.topnav-item {
+  border: 0;
+  background: none;
+  font: inherit;
+  font-size: 14px;
+  cursor: pointer;
+}
 .topnav-active { background: var(--accent-soft); color: #b31412; font-weight: 700; }
 
 @media (max-width: 900px) {

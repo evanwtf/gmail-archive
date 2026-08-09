@@ -7,6 +7,7 @@ These tests verify the query functions work correctly against a real database.
 from __future__ import annotations
 
 import os
+from collections.abc import Iterator
 
 import pytest
 
@@ -500,3 +501,97 @@ class TestGetMessageFull:
             conn.execute("delete from labels where raw_sha256 = %s", (sha256,))
             conn.execute("delete from messages where raw_sha256 = %s", (sha256,))
             conn.execute("delete from blobs where sha256 = %s", (sha256,))
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not DSN, reason="needs GMAIL_ARCHIVE_TEST_DATABASE_URL")
+class TestLikeMetacharactersAreLiteral:
+    """`%` and `_` in an operator value match themselves (#43).
+
+    Parameterisation stops injection; it does nothing about over-matching.
+    `from:%` built `ilike '%%%'` and matched the entire archive, and
+    `from:first_last` also matched `firstXlast` — silently broader than what
+    was typed, which is worse than an error.
+    """
+
+    #: Addresses that differ only in the characters LIKE treats as wildcards.
+    ROWS = (
+        ("literal-underscore", "first_last@example.com", "a_b invoice"),
+        ("wildcard-would-match", "firstXlast@example.com", "aXb invoice"),
+        ("literal-percent", "sale100%@example.com", "100% off"),
+        ("plain", "someone@example.com", "nothing special"),
+    )
+
+    @pytest.fixture
+    def seeded(self) -> Iterator[dict[str, str]]:
+        import hashlib
+
+        import psycopg
+
+        shas = {
+            name: hashlib.sha256(f"like-{name}".encode()).hexdigest()
+            for name, _, _ in self.ROWS
+        }
+        with psycopg.connect(DSN) as conn:  # type: ignore[arg-type]
+            for name, addr, subject in self.ROWS:
+                sha = shas[name]
+                conn.execute(
+                    "insert into blobs (sha256, size_bytes, kind)"
+                    " values (%s, 10, 'message') on conflict do nothing",
+                    (sha,),
+                )
+                conn.execute(
+                    "insert into messages (raw_sha256, size_bytes, from_addr,"
+                    " subject, search_text) values (%s, 10, %s, %s, %s)"
+                    " on conflict do nothing",
+                    (sha, addr, subject, subject),
+                )
+            conn.commit()
+        try:
+            yield shas
+        finally:
+            with psycopg.connect(DSN) as conn:  # type: ignore[arg-type]
+                for sha in shas.values():
+                    conn.execute("delete from messages where raw_sha256 = %s", (sha,))
+                    conn.execute("delete from blobs where sha256 = %s", (sha,))
+                conn.commit()
+
+    def _from_addrs(self, query: str) -> set[str]:
+        import psycopg
+
+        with psycopg.connect(DSN) as conn:  # type: ignore[arg-type]
+            return {m.from_addr or "" for m in search(conn, query, limit=50).messages}
+
+    def test_underscore_does_not_match_any_character(
+        self, seeded: dict[str, str]
+    ) -> None:
+        found = self._from_addrs("from:first_last")
+        assert "first_last@example.com" in found
+        assert "firstXlast@example.com" not in found
+
+    def test_a_bare_percent_does_not_match_everything(
+        self, seeded: dict[str, str]
+    ) -> None:
+        # The worst case: this used to return the whole archive.
+        found = self._from_addrs("from:%")
+        assert "sale100%@example.com" in found
+        assert "someone@example.com" not in found
+
+    def test_a_literal_percent_in_an_address_matches_itself(
+        self, seeded: dict[str, str]
+    ) -> None:
+        found = self._from_addrs("from:100%@example.com")
+        assert found == {"sale100%@example.com"}
+
+    def test_subject_underscore_is_literal_too(self, seeded: dict[str, str]) -> None:
+        import psycopg
+
+        with psycopg.connect(DSN) as conn:  # type: ignore[arg-type]
+            subjects = {
+                m.subject or "" for m in search(conn, "subject:a_b", limit=50).messages
+            }
+        assert "a_b invoice" in subjects
+        assert "aXb invoice" not in subjects
+
+    def test_an_ordinary_value_is_unaffected(self, seeded: dict[str, str]) -> None:
+        assert "someone@example.com" in self._from_addrs("from:someone")

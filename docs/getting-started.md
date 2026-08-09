@@ -113,6 +113,26 @@ docker compose --profile ingest run --rm ingest "/mbox/All mail Including Spam a
 **If Takeout gave you several `.mbox` files, run this once per file.** They
 share one archive; a message appearing in two files is stored once.
 
+### More than one Gmail account
+
+Add `--account you@gmail.com` and run the ingest once per account:
+
+```bash
+docker compose --profile ingest run --rm ingest --account you@gmail.com "/mbox/..."
+```
+
+Omit it for a single mailbox and everything lands in a default account.
+
+The flag matters more than it looks. Messages are stored by content hash, so
+the *same* message in two accounts is one row — and the account is the only
+thing recording that it arrived twice, and the only thing that can hold
+different labels for it in each. Without the flag a second export merges into
+the first irreversibly.
+
+There is no account switcher in the UI yet
+([#54](https://github.com/evanwtf/gmail-archive/issues/54)); the data is kept
+correctly now so the view can be added later without re-ingesting.
+
 ### How long
 
 Measured on this project's reference hardware (Intel i3-7100, 4 threads):

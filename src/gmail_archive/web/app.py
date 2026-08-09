@@ -282,8 +282,24 @@ async def login_submit(request: Request) -> Response:
     return response
 
 
-@app.get("/logout")
+@app.post("/logout")
 def logout() -> Response:
+    """Sign out. POST only (#48).
+
+    This was a GET, which meant any page anywhere could sign you out with
+    `<img src="http://archive.local:8000/logout">`. Pure nuisance — nothing
+    can be read and the fix is to log in again — but a state-changing GET is
+    the precondition for CSRF, and this was the app's only one. Making it POST
+    turns "every GET here is safe" from a coincidence into a property.
+
+    Note what this does and does not do. The cookie is deleted, so this
+    browser forgets the session; the token itself stays valid until it
+    expires, because validity is an HMAC over an expiry rather than
+    server-side state. That is the trade that makes the cookie stateless, and
+    on a single-user archive it is a fair one — but it means logout is "forget
+    this device", not "revoke everywhere". The help panel says so, since the
+    button alone implies otherwise.
+    """
     response = RedirectResponse("/login", status_code=303)
     response.delete_cookie(SESSION_COOKIE)
     return response

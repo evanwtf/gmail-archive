@@ -246,6 +246,28 @@ def stats(conn: psycopg.Connection[object]) -> ArchiveStats:
 #:
 #: Demoted rather than hidden, and demoted the same way NULLs already are, so
 #: the row is still reachable at the end of the walk.
+def _like(value: str) -> str:
+    """A substring LIKE pattern that matches `value` literally (#43).
+
+    `%` and `_` are LIKE metacharacters, and neither the parser nor psycopg
+    treats them as special — parameterisation prevents injection, not
+    over-matching. So `from:%` became `ilike '%%%'` and matched every message
+    in the archive, and `from:first_last` quietly also matched `firstXlast`.
+    The underscore case is the one that actually bites: addresses are full of
+    them, and the result is silently too broad rather than an error.
+
+    Backslash is escaped first. Doing it after would double-escape the
+    backslashes the other two replacements just introduced.
+
+    Callers must pair this with `escape '\\'`, because Postgres's default
+    LIKE escape character is already backslash but `standard_conforming_strings`
+    makes that dependent on how the literal was written. Declaring it removes
+    the doubt.
+    """
+    escaped = value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{escaped}%"
+
+
 _IMPLAUSIBLE_LAST = "(internal_date > now() + interval '90 days') asc"
 
 #: The same expression, qualified, for queries that alias `messages` as `m`.
@@ -306,16 +328,21 @@ def search(
 
     # Address and subject matching is substring, case-insensitive: people
     # remember "amazon" or a first name, not a full RFC 5322 address.
+    #
+    # `_like` escapes LIKE metacharacters. Without it `from:first_last` also
+    # matches `firstXlast`, and `from:%` matches the entire archive (#43).
     for i, value in enumerate(parsed.from_addrs):
-        conditions.append(f"m.from_addr ilike %(from{i})s")
-        params[f"from{i}"] = f"%{value}%"
+        conditions.append(f"m.from_addr ilike %(from{i})s escape '\\'")
+        params[f"from{i}"] = _like(value)
     for i, value in enumerate(parsed.to_addrs):
         # array_to_string so one pattern can match any recipient.
-        conditions.append(f"array_to_string(m.to_addrs, ' ') ilike %(to{i})s")
-        params[f"to{i}"] = f"%{value}%"
+        conditions.append(
+            f"array_to_string(m.to_addrs, ' ') ilike %(to{i})s escape '\\'"
+        )
+        params[f"to{i}"] = _like(value)
     for i, value in enumerate(parsed.subjects):
-        conditions.append(f"m.subject ilike %(subj{i})s")
-        params[f"subj{i}"] = f"%{value}%"
+        conditions.append(f"m.subject ilike %(subj{i})s escape '\\'")
+        params[f"subj{i}"] = _like(value)
 
     # Labels match exactly — they are a controlled vocabulary, and `label:Bank`
     # matching "Bank Alerts" would be a surprise.
