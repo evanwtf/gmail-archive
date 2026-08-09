@@ -102,14 +102,39 @@ def read_message(path: Path, offset: int, length: int) -> bytes:
 
 
 def strip_envelope(raw: bytes) -> bytes:
-    """Strip the `From_` envelope line from a message, returning just the
-    RFC822 headers and body.
+    """Strip the mbox framing, returning just the RFC822 headers and body.
 
-    The envelope line is the first line of each message in mbox format and
-    is not part of the RFC822 message.
+    Two things belong to the file format rather than to the message, and both
+    have to go:
+
+    - **The `From_` envelope line.** The first line of every message in an
+      mbox, and never part of the RFC822 message.
+    - **The blank line before the next `From_`.** Writers emit it to separate
+      messages; readers are expected to drop it.
+
+    That second one was missed, and it made the archive's central invariant
+    quietly false. The separator newline was stored as the last byte of the
+    message, so every `raw_sha256` hashed the message *plus a framing byte* —
+    and an exported archive re-ingested to a completely different set of
+    hashes (#53). It was the round-trip test in #21 that surfaced it; no unit
+    test could, because the disagreement is between the writer and the reader.
+
+    Exactly one trailing newline is removed, and only if one is present.
+    A CRLF body ends `\r\n` and the framing byte is a bare `\n`, so
+    `...\r\n\n` becomes `...\r\n` — the message, unchanged. A body whose own
+    last line is blank keeps it, because only the one framing byte goes.
+
+    **The last message in a file is ambiguous** and always has been: if a
+    writer omitted the final blank line, this removes a byte that belonged to
+    the message. Every mbox writer in practice emits it, and Python's own
+    `mailbox` module makes the same assumption, so the trade is one
+    hypothetical byte on one message against every message being wrong.
     """
     idx = raw.find(b"\n")
     if idx == -1:
         # Single-line message with no newline — the whole thing is the envelope.
         return b""
-    return raw[idx + 1 :]
+    body = raw[idx + 1 :]
+    if body.endswith(b"\n"):
+        body = body[:-1]
+    return body

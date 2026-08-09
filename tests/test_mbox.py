@@ -175,9 +175,30 @@ class TestReadMessage:
 
 class TestStripEnvelope:
     def test_strips_from_line(self) -> None:
+        # The trailing `\n` here is the mbox separator the writer emits before
+        # the next `From_`, not part of the message — see #53. This assertion
+        # used to keep it, which is precisely the bug: it encoded the wrong
+        # behaviour, so the splitter and the exporter disagreed and every hash
+        # changed on a round trip.
         raw = b"From user@e.com Mon Jan 01 00:00:00 2000\nSubject: s\n\nbody\n"
         stripped = strip_envelope(raw)
-        assert stripped == b"Subject: s\n\nbody\n"
+        assert stripped == b"Subject: s\n\nbody"
+
+    def test_crlf_message_keeps_its_own_line_ending(self) -> None:
+        # Real Takeout mail is CRLF. The framing byte is a bare `\n`, so
+        # removing it leaves the message's own `\r\n` untouched.
+        raw = b"From u@e.com Mon Jan 01 00:00:00 2000\r\nSubject: s\r\n\r\nbody\r\n\n"
+        assert strip_envelope(raw) == b"Subject: s\r\n\r\nbody\r\n"
+
+    def test_a_body_ending_in_a_blank_line_keeps_it(self) -> None:
+        # Only one byte goes. A message whose last line is genuinely empty
+        # still ends with a blank line after stripping.
+        raw = b"From u@e.com Mon Jan 01 00:00:00 2000\nSubject: s\n\nbody\n\n\n"
+        assert strip_envelope(raw) == b"Subject: s\n\nbody\n\n"
+
+    def test_message_without_a_trailing_newline_is_untouched(self) -> None:
+        raw = b"From u@e.com Mon Jan 01 00:00:00 2000\nSubject: s\n\nbody"
+        assert strip_envelope(raw) == b"Subject: s\n\nbody"
 
     def test_empty_body_after_envelope(self) -> None:
         raw = b"From user@e.com Mon Jan 01 00:00:00 2000\n"

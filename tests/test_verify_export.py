@@ -260,16 +260,16 @@ class TestExportRoundTrip:
                 del i
         return path
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "#53: export writes the mbox blank-line separator, and the "
-            "splitter counts it as the last byte of the message, so every "
-            "hash changes on a round trip. Fixed in the splitter as part of "
-            "the #52 rebuild; strict so this fails loudly once it passes."
-        ),
-    )
     def test_stored_bytes_survive_export_and_re_ingest(self, tmp_path: Path) -> None:
+        """Export then re-ingest reproduces every hash. This is the one (#53).
+
+        It was `xfail(strict=True)` for exactly as long as it took to fix the
+        splitter: the exporter wrote the mbox blank-line separator, the
+        splitter counted it as the message's last byte, and so a round trip
+        changed every hash in the archive. Nothing else caught it, and nothing
+        else could — the disagreement was between two components that no unit
+        test exercises together.
+        """
         import psycopg
 
         from conftest import scratch_database
