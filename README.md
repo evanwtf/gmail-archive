@@ -236,15 +236,19 @@ a much higher msg/s and similar MB/s.
 
 ## Known defects
 
-Every entry in this table used to be closed — the list had gone stale while
-the README still told people to read it before trusting the project. These are
-the open ones, checked against the tracker.
+**None currently open.** Every defect this table has ever listed is closed;
+the live list is [the bug label](https://github.com/evanwtf/gmail-archive/issues?q=is%3Aissue+is%3Aopen+label%3Abug),
+which is the thing to trust — a hand-maintained table here has gone stale
+twice, and a stale defect list is worse than none.
 
-| What | Effect | Issue |
-|---|---|---|
-| `SELECT` in IMAP materialises the whole folder, twice | `SELECT "All Mail"` builds ~554k objects before answering. Slow, and memory scales with the folder rather than the request | [#45](https://github.com/evanwtf/gmail-archive/issues/45) |
-| Login throttle is one shared bucket, and never shrinks | Behind a proxy every client shares one failure count, so one wrong password throttles everyone. The map also grows without bound | [#47](https://github.com/evanwtf/gmail-archive/issues/47) |
-| `GmailApiSource` ignores 403 rate limits | The alternative (non-Takeout) source aborts instead of backing off. Does not affect mbox ingest, which is the supported path | [#23](https://github.com/evanwtf/gmail-archive/issues/23) |
+Two things worth knowing that are not defects:
+
+- **`gmail_archive.sources.GmailApiSource` is interface-only.** Nothing calls
+  it, and its 403 rate-limit handling is known-broken
+  ([#23](https://github.com/evanwtf/gmail-archive/issues/23)). The supported
+  ingest path is the Takeout mbox.
+- **Updating the archive means a new Takeout export.** There is no incremental
+  sync yet ([#55](https://github.com/evanwtf/gmail-archive/issues/55)).
 
 Full list, with the test and CI gaps behind them, at the end of
 [docs/progress.md](docs/progress.md#post-build-review--2026-08-06).

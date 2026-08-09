@@ -860,3 +860,172 @@ class TestAccountAttribution:
                     " join accounts a on a.id = r.account_id"
                 ).fetchone()
         assert row == ("c@example.com",)
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not DSN, reason="needs GMAIL_ARCHIVE_TEST_DATABASE_URL")
+class TestTwoOverlappingTakeoutExports:
+    """Two exports months apart, fed in one after the other.
+
+    The realistic way to keep this archive current: request Takeout again
+    later and ingest the new file on top of the old one. The second export is
+    not a delta — it contains everything the first did, plus whatever arrived
+    since — so the whole thing rests on deduplication being exact.
+
+    It is, and for a structural reason rather than a lucky one: `raw_sha256`
+    is the primary key, so a byte-identical message is the same row by
+    construction. There is no comparison step that could be wrong.
+    """
+
+    def _write(self, path: Path, bodies: list[bytes]) -> Path:
+        with path.open("wb") as fh:
+            for raw in bodies:
+                fh.write(b"From MAILER-DAEMON@archive  Thu Jan  1 00:00:00 1970\r\n")
+                fh.write(raw)
+                fh.write(b"\n")
+        return path
+
+    def _bodies(self, start: int, count: int, label: str) -> list[bytes]:
+        return [
+            (
+                f"Subject: message {i}\r\nFrom: s{i}@example.com\r\n"
+                f"Date: Fri, 4 Apr 2025 09:00:00 +0000\r\n"
+                f"Message-ID: <m{i}@example.com>\r\n"
+                f"X-Gmail-Labels: {label}\r\n\r\nbody of message {i}\r\n"
+            ).encode()
+            for i in range(start, start + count)
+        ]
+
+    def _settings(self, tmp_path: Path, dsn: str) -> Settings:
+        # One blob store, as a real archive has.
+        return Settings(
+            database_url=dsn,
+            blob_dir=tmp_path / "blobs",
+            workers=1,
+            batch_size=25,
+            log_level="WARNING",
+            web_password_hash="",
+            imap_password="",
+        )
+
+    def test_the_second_export_adds_only_what_is_new(self, tmp_path: Path) -> None:
+        import psycopg
+
+        from conftest import scratch_database
+        from gmail_archive.migrate import migrate
+
+        # August: 40 messages. December: those same 40, byte for byte, plus 20
+        # that arrived since — which is what a real second Takeout looks like.
+        august = self._bodies(0, 40, "Inbox")
+        december = august + self._bodies(40, 20, "Inbox")
+
+        assert DSN is not None
+        with scratch_database(DSN) as dsn:
+            migrate(dsn)
+            settings = self._settings(tmp_path, dsn)
+
+            first = ingest(settings, self._write(tmp_path / "august.mbox", august))
+            second = ingest(settings, self._write(tmp_path / "december.mbox", december))
+
+            with psycopg.connect(dsn) as conn:
+                messages = conn.execute("select count(*) from messages").fetchone()
+                sightings = conn.execute(
+                    "select count(*) from message_sightings"
+                ).fetchone()
+                sources = conn.execute(
+                    "select count(distinct source_path) from message_sightings"
+                ).fetchone()
+                blobs = conn.execute("select count(*) from blobs").fetchone()
+
+        assert first.messages_new == 40
+        assert first.messages_duplicate == 0
+
+        # The point: the December run sees all 60 but stores only the 20 new.
+        assert second.messages_seen == 60
+        assert second.messages_new == 20
+        assert second.messages_duplicate == 40
+        assert second.failures == 0
+
+        # 60 distinct messages, one blob each.
+        assert messages == (60,)
+        assert blobs == (60,)
+
+        # But 100 sightings across 2 files — nothing is silently discarded,
+        # and `verify` can still reconcile either export against the archive.
+        assert sightings == (100,)
+        assert sources == (2,)
+
+    def test_re_ingesting_the_same_export_changes_nothing(self, tmp_path: Path) -> None:
+        # The other half of the guarantee: an accidental repeat is harmless,
+        # which is what makes "just ingest it again" safe advice.
+        import psycopg
+
+        from conftest import scratch_database
+        from gmail_archive.migrate import migrate
+
+        bodies = self._bodies(0, 30, "Inbox")
+        assert DSN is not None
+        with scratch_database(DSN) as dsn:
+            migrate(dsn)
+            settings = self._settings(tmp_path, dsn)
+            path = self._write(tmp_path / "same.mbox", bodies)
+
+            ingest(settings, path)
+            again = ingest(settings, path)
+
+            with psycopg.connect(dsn) as conn:
+                messages = conn.execute("select count(*) from messages").fetchone()
+                sightings = conn.execute(
+                    "select count(*) from message_sightings"
+                ).fetchone()
+
+        assert again.messages_new == 0
+        assert again.messages_duplicate == 30
+        assert messages == (30,)
+        # Same file, same offsets: the sighting rows collide and are not
+        # duplicated either.
+        assert sightings == (30,)
+
+    def test_labels_accumulate_rather_than_track_the_later_export(
+        self, tmp_path: Path
+    ) -> None:
+        """A real caveat, pinned so it is a decision rather than a surprise.
+
+        If a message was in the inbox in August and archived by December, the
+        December export no longer carries the `Inbox` label — but the label
+        row from August is still there, and label writes are
+        `on conflict do nothing`. So labels are the *union* across exports,
+        never the latest state.
+
+        That is defensible for an archive (it records what was true, and
+        nothing is lost) but it is not what a user expects from "sync", and it
+        is worth knowing before relying on `label:Inbox` to mean "currently in
+        the inbox".
+        """
+        import psycopg
+
+        from conftest import scratch_database
+        from gmail_archive.migrate import migrate
+
+        body = self._bodies(0, 1, "Inbox")
+        archived = [
+            body[0].replace(b"X-Gmail-Labels: Inbox", b"X-Gmail-Labels: Archived")
+        ]
+
+        assert DSN is not None
+        with scratch_database(DSN) as dsn:
+            migrate(dsn)
+            settings = self._settings(tmp_path, dsn)
+            ingest(settings, self._write(tmp_path / "aug.mbox", body))
+            ingest(settings, self._write(tmp_path / "dec.mbox", archived))
+
+            with psycopg.connect(dsn) as conn:
+                labels = conn.execute(
+                    "select label from labels order by label"
+                ).fetchall()
+                messages = conn.execute("select count(*) from messages").fetchone()
+
+        # Two different label sets means two different bodies, so these are
+        # two messages — the header is part of the hashed bytes.
+        assert messages == (2,)
+        assert labels == [("Archived",), ("Inbox",)]
