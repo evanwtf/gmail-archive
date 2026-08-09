@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 from gmail_archive.config import Settings
+from gmail_archive.fixtures.generator import Pathology, generate
 from gmail_archive.ingest import (
     WorkerResult,
     _checkpoint,
@@ -514,3 +515,107 @@ class TestIngestExclusivity:
             )
         finally:
             other.close()
+
+
+# ── Storability: the contract no unit test can express (#41) ─────────────────
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not DSN, reason="needs GMAIL_ARCHIVE_TEST_DATABASE_URL")
+class TestEverythingTheParserEmitsIsStorable:
+    """Every value `parse()` produces must survive the trip into Postgres.
+
+    Three bugs have now had exactly this shape — NUL bytes in decoded text
+    (twice, the second time 194,000 messages into an IMAP backfill), lone
+    surrogates from `surrogateescape`, and a timezone offset past ±15:59.
+    Each was found by a batch of a thousand messages dying, and each got a
+    unit test afterwards.
+
+    None of those unit tests could have prevented the next one, because the
+    failure is never in `parse()`. It returns happily; the COPY rejects the
+    value later. The hypothesis property test asserts `parse()` does not
+    raise, which stayed true through all three. The contract that was actually
+    being violated only exists where the parser meets the database, so that is
+    where it has to be checked.
+
+    Every pathology the generator knows how to make, ingested for real. When a
+    fourth one of these appears — and the pattern says it will, as something
+    nobody anticipated — the fix is a new `Pathology` member, and this test
+    covers it from then on with no new test to write.
+    """
+
+    def _fixture(self, tmp_path: Path, name: str, pathologies: list[str]) -> Path:
+        out = tmp_path / f"{name}.mbox"
+        selected = [Pathology(p) for p in pathologies]
+        # `count` must cover every pathology at least once; the generator
+        # refuses otherwise, which is the property that makes this test
+        # meaningful rather than a coin flip.
+        generate(out, count=max(len(selected) * 4, 40), seed=41, pathologies=selected)
+        return out
+
+    def test_every_pathology_at_once_ingests_without_a_single_failure(
+        self, tmp_path: Path
+    ) -> None:
+        from conftest import scratch_database
+        from gmail_archive.migrate import migrate
+
+        every = [p.value for p in Pathology]
+        mbox = self._fixture(tmp_path, "every", every)
+
+        assert DSN is not None
+        with scratch_database(DSN) as dsn:
+            migrate(dsn)
+            settings = Settings(
+                database_url=dsn,
+                blob_dir=tmp_path / "blobs-every",
+                workers=2,
+                batch_size=10,
+                log_level="WARNING",
+                web_password_hash="",
+                imap_password="",
+            )
+            report = ingest(settings, mbox)
+
+        # `failures` is the whole assertion. A message Postgres refuses is
+        # counted here, and the run still "succeeds" — which is why a passing
+        # ingest was never evidence of anything.
+        assert report.failures == 0, (
+            f"{report.failures} of {report.messages_seen} messages could not be "
+            f"stored; the pathologies in play were {', '.join(every)}"
+        )
+        assert report.messages_seen == report.messages_new + report.messages_duplicate
+
+    @pytest.mark.parametrize(
+        "pathology",
+        # Named individually so a failure says which defect broke storage
+        # rather than "one of twenty-six did". The parametrised ids are the
+        # CLI spellings, so a failure is directly reproducible with
+        # `gen-fixture --pathologies <id>`.
+        [p.value for p in Pathology],
+    )
+    def test_each_pathology_alone_ingests_without_a_single_failure(
+        self, tmp_path: Path, pathology: str
+    ) -> None:
+        from conftest import scratch_database
+        from gmail_archive.migrate import migrate
+
+        mbox = self._fixture(tmp_path, pathology, [pathology])
+
+        assert DSN is not None
+        with scratch_database(DSN) as dsn:
+            migrate(dsn)
+            settings = Settings(
+                database_url=dsn,
+                blob_dir=tmp_path / f"blobs-{pathology}",
+                workers=1,
+                batch_size=10,
+                log_level="WARNING",
+                web_password_hash="",
+                imap_password="",
+            )
+            report = ingest(settings, mbox)
+
+        assert report.failures == 0, (
+            f"'{pathology}' produced {report.failures} unstorable messages; "
+            f"reproduce with: gmail-archive gen-fixture --pathologies {pathology}"
+        )
