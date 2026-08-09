@@ -135,14 +135,18 @@ correctly now so the view can be added later without re-ingesting.
 
 ### How long
 
-Measured on this project's reference hardware (Intel i3-7100, 4 threads):
-**5,000 synthetic messages, 39 MB, in 7.3 seconds** — about 685 messages per
-second and 5.3 MB/s.
+Measured on this project's reference hardware (Intel i3-7100, 4 threads),
+ingesting the real 18.9 GB export:
 
-Real mail is larger per message than the synthetic fixture, so throughput is
-bound by bytes rather than by count. For a 20 GB export, budget tens of
-minutes. The ingest logs live `msg/s` and `MiB/s` at every checkpoint, so you
-can extrapolate a few seconds in.
+**277,020 messages in 42 minutes 54 seconds** — 108 messages/second, 7.3 MB/s.
+
+Throughput is bound by bytes, not message count, so scale from the size of
+your `.mbox` rather than the number of messages in it. The ingest logs live
+`msg/s` and `MiB/s` at every checkpoint, so you can extrapolate a few seconds
+in.
+
+Budget memory too: peak RSS was 7.8 GB, most of it the memory-mapped export
+and therefore reclaimable, but a machine with 4 GB and no swap will struggle.
 
 It is resumable: if it is killed, run the same command again and it continues
 from its checkpoint. Only one ingest may run at a time; a second refuses

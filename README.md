@@ -208,6 +208,32 @@ path on disk, so integrity checking needs no stored checksum: the name *is* the
 checksum. Migrations are numbered `.sql` files under `migrations/`, applied by
 an in-repo runner. Decisions are recorded in [docs/adr/](docs/adr/).
 
+## Measured performance
+
+One real corpus, one machine — an Intel i3-7100 (2 cores, 4 threads) with the
+Postgres container on the same box. Numbers from the full rebuild on
+2026-08-09, not from a benchmark harness.
+
+| | |
+|---|---|
+| Corpus | 277,020 messages, 18.9 GB mbox |
+| Ingest | **42m 54s** — 108 msg/s, 7.3 MB/s |
+| Peak RSS | 7.8 GB (the splitter mmaps the file; most of that is reclaimable page cache) |
+| CPU | 61% of one core-equivalent — I/O and Postgres bound, not parse bound |
+| `analyze` | 8s for 13,729 senders |
+| `verify --deep` | 3m 30s to re-hash all 277,020 blobs |
+| Resulting database | 3.87 GB |
+| Resulting blob store | 19 GB |
+
+**Treat the ingest figure as a floor.** Part of that run competed with a test
+suite hitting the same Postgres, and per-checkpoint throughput swung between
+62 and 390 msg/s. An idle machine will do better; the point of the number is
+that a 20 GB export is well under an hour, not that it is exactly 108 msg/s.
+
+Throughput is bound by bytes rather than message count — this corpus averages
+68 KB a message, so a mailbox of the same size with smaller messages will show
+a much higher msg/s and similar MB/s.
+
 ## Known defects
 
 Every entry in this table used to be closed — the list had gone stale while

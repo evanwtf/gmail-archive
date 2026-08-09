@@ -14,6 +14,7 @@ Operations guide for the gmail-archive stack.
 - [Starting the IMAP server](#starting-the-imap-server)
 - [Backfilling IMAP data](#backfilling-imap-data)
 - [Postgres bulk-load settings](#postgres-bulk-load-settings)
+- [Rebuilding the archive from scratch](#rebuilding-the-archive-from-scratch)
 - [Backup and restore](#backup-and-restore)
 - [Troubleshooting](#troubleshooting)
 
@@ -295,6 +296,73 @@ SELECT pg_reload_conf();
 
 **Warning:** `wal_level = 'minimal'` means no point-in-time recovery. Revert
 immediately after the import.
+
+## Rebuilding the archive from scratch
+
+Some changes rewrite every `raw_sha256` — the mboxrd unquoting fix and the mbox
+separator fix both did. Those are not migrations. The only way to apply them is
+to ingest the export again, and the point of this section is that **you never
+have to destroy the working archive to do it.**
+
+The whole procedure is: build a second archive beside the first, verify it,
+then switch a single line of `.env`. That line is also the undo.
+
+### Before you start
+
+- **The original export.** Not a fresh one — a new Takeout is a different file,
+  with mail added and deleted since. Confirm it is the same one:
+  `select max(byte_offset + byte_length) from message_sightings` should equal
+  the file's size in bytes exactly.
+- **Room for a second blob store.** It is the size of the export. Check the
+  filesystem you are putting it on, not `/` in general.
+- **Not `/tmp`.** On many systems that is a RAM disk of a few GB.
+
+### The procedure
+
+```bash
+# 1. A dump of the current database, purely as insurance — nothing here
+#    modifies it.
+docker compose exec -T postgres pg_dump -U gmail_archive -d gmail_archive -Fc \
+  > ~/gmail-archive-pre-rebuild.dump
+
+# 2. A fresh database and a fresh blob store, both beside the originals.
+docker compose exec -T postgres psql -U gmail_archive -d postgres \
+  -c "create database gmail_archive_v2"
+
+export GMAIL_ARCHIVE_DATABASE_URL=".../gmail_archive_v2"
+export GMAIL_ARCHIVE_BLOB_DIR=/path/to/blobs-v2
+uv run gmail-archive migrate
+
+# 3. Ingest. Time it — this is the only place real throughput is observable.
+uv run gmail-archive ingest "/path/to/All mail Including Spam and Trash.mbox"
+
+# 4. Classify senders, then check the result end to end.
+uv run gmail-archive analyze
+uv run gmail-archive verify --deep
+```
+
+`verify --deep` re-hashes every blob against its filename, which is the check
+that matters here: it proves the new store is internally consistent under the
+new hashing, independent of the old one.
+
+### Cutting over
+
+Only after verify passes. Point `.env` at the new store and restart:
+
+```
+GMAIL_ARCHIVE_BLOB_HOST_PATH=/path/to/blobs-v2
+```
+
+Keep the old database and blob store until you have used the new archive for a
+while. Reverting is the same line changed back. Once you are satisfied, the old
+store is `rm -rf` — and because the two stores never shared a hash, there is no
+risk of deleting something the new one points at.
+
+### What to expect
+
+Message counts should match, or differ only by duplicates collapsing
+differently — a hashing change can merge two rows that previously differed by a
+framing byte. A large discrepancy is a bug, not a rounding difference.
 
 ## Backup and restore
 
