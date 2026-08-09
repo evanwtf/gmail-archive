@@ -195,18 +195,51 @@ class MailboxData(MailboxDataInterface[Message]):
                 yield msg
 
     async def snapshot(self) -> MailboxSnapshot:
-        exists = 0
+        """Folder counts, from one row of SQL rather than the whole folder.
+
+        This used to iterate `messages()`, which materialises a `Message` per
+        row. `update_selected()` already loads the folder once on a SELECT, so
+        a single `SELECT INBOX` built about **554,000 objects** — twice the
+        folder — to produce three integers (#45).
+
+        The counts were never per-message anyway, which is what makes
+        replacing the scan with a query exactly equivalent rather than
+        approximately so:
+
+        - `_PERMANENT_FLAGS` is a module constant applied to every message, so
+          `Seen not in msg.permanent_flags` had the same answer for all of
+          them. It is derived from the constant here so that if flags ever do
+          become per-message, this stops being right *visibly* rather than
+          silently.
+        - `Message` is always constructed with `recent` defaulting to False —
+          nothing in a read-only archive is ever RECENT — so the count was
+          unconditionally zero.
+
+        Also fixes a latent bug: `_max_uid` was only ever populated by
+        `_load_all_messages()`, so UIDNEXT was 1 on any instance that had not
+        run a full load. It comes from the same query now.
+        """
+        pool = await self._conn_factory()
+        async with pool.connection() as conn:
+            row = await (
+                await conn.execute(
+                    "SELECT count(*), coalesce(max(uid), 0)"
+                    " FROM imap_uids WHERE folder_id = %s",
+                    (self._folder_id,),
+                )
+            ).fetchone()
+        exists = int(row[0]) if row else 0
+        max_uid = int(row[1]) if row else 0
+        if max_uid > self._max_uid:
+            self._max_uid = max_uid
+
+        # Nothing is ever RECENT in a read-only archive.
         recent = 0
-        unseen = 0
-        first_unseen: int | None = None
-        async for msg in self.messages():
-            exists += 1
-            if msg.recent:
-                recent += 1
-            if Seen not in msg.permanent_flags:
-                unseen += 1
-                if first_unseen is None:
-                    first_unseen = exists
+        # Every message carries the same permanent flags, so this is all-or-
+        # nothing rather than a per-message question.
+        unseen = 0 if Seen in _PERMANENT_FLAGS else exists
+        first_unseen: int | None = None if unseen == 0 else 1
+
         return MailboxSnapshot(
             self.mailbox_id,
             self.readonly,
