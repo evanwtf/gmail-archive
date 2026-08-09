@@ -8,6 +8,7 @@ integers, and nothing noticed because it *worked*. Every earlier IMAP bug was
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import os
 from collections.abc import AsyncIterator, Iterator
@@ -154,3 +155,359 @@ class TestSnapshotDoesNotMaterialiseTheFolder:
             with psycopg.connect(DSN) as conn:  # type: ignore[arg-type]
                 conn.execute("delete from imap_folders where id = %s", (folder_id,))
                 conn.commit()
+
+
+class TestReadOnlyEnforcement:
+    """Every mutating operation refuses (#16).
+
+    Cheap to write, and worth pinning precisely because it is cheap: the
+    read-only guarantee is the archive's central promise, and it is currently
+    enforced by five separate `raise` statements that nothing checks. One
+    accidental implementation would remove it silently.
+    """
+
+    async def test_mailbox_mutations_raise(self, seeded_folder: int, pool: Any) -> None:
+        from pymap.exceptions import MailboxReadOnly
+
+        mailbox = _mailbox(seeded_folder, pool)
+        with pytest.raises(MailboxReadOnly):
+            await mailbox.append(None)  # type: ignore[arg-type]
+        with pytest.raises(MailboxReadOnly):
+            await mailbox.copy(1, mailbox)
+        with pytest.raises(MailboxReadOnly):
+            await mailbox.move(1, mailbox)
+        with pytest.raises(MailboxReadOnly):
+            await mailbox.update(1, None, frozenset(), None)  # type: ignore[arg-type]
+
+    async def test_delete_raises(self, seeded_folder: int, pool: Any) -> None:
+        from pymap.exceptions import MailboxReadOnly
+
+        with pytest.raises(MailboxReadOnly):
+            await _mailbox(seeded_folder, pool).delete([1, 2, 3])
+
+    async def test_the_mailbox_reports_itself_readonly(
+        self, seeded_folder: int, pool: Any
+    ) -> None:
+        assert _mailbox(seeded_folder, pool).readonly is True
+
+    async def test_mailbox_set_mutations_raise(self, pool: Any) -> None:
+        from pymap.exceptions import NotAllowedError
+
+        from gmail_archive.imap.mailbox import MailboxSet
+
+        async def factory() -> Any:
+            return pool
+
+        mailbox_set = MailboxSet(factory)
+        with pytest.raises(NotAllowedError):
+            await mailbox_set.add_mailbox("Nope")
+        with pytest.raises(NotAllowedError):
+            await mailbox_set.delete_mailbox("Nope")
+        with pytest.raises(NotAllowedError):
+            await mailbox_set.rename_mailbox("A", "B")
+
+
+class TestFolderSync:
+    """Folders track the `labels` table (#16)."""
+
+    async def test_inbox_always_exists_and_sync_is_idempotent(
+        self, seeded_folder: int, pool: Any
+    ) -> None:
+        from gmail_archive.imap.mailbox import MailboxSet
+
+        async def factory() -> Any:
+            return pool
+
+        mailbox_set = MailboxSet(factory)
+        first = await mailbox_set._sync_folders()
+        assert "INBOX" in first
+
+        # Re-running must not create duplicates — it runs on every LIST, so a
+        # non-idempotent sync would grow the table on every client refresh.
+        second = await mailbox_set._sync_folders()
+        assert first == second
+
+    async def test_get_mailbox_is_case_insensitive_for_inbox(self, pool: Any) -> None:
+        # RFC 3501: INBOX is case-insensitive. Clients spell it every way.
+        from gmail_archive.imap.mailbox import MailboxSet
+
+        async def factory() -> Any:
+            return pool
+
+        mailbox_set = MailboxSet(factory)
+        assert (await mailbox_set.get_mailbox("inbox"))._name == "INBOX"
+        assert (await mailbox_set.get_mailbox("InBoX"))._name == "INBOX"
+
+    async def test_get_mailbox_returns_the_same_instance(self, pool: Any) -> None:
+        """One `MailboxData` per folder, for the life of the session.
+
+        `get_mailbox()` used to build a new one per call, which threw away the
+        UID ceiling and selected-set state a SELECT had just established —
+        before the FETCH that followed could use them.
+        """
+        from gmail_archive.imap.mailbox import MailboxSet
+
+        async def factory() -> Any:
+            return pool
+
+        mailbox_set = MailboxSet(factory)
+        assert await mailbox_set.get_mailbox("INBOX") is await mailbox_set.get_mailbox(
+            "INBOX"
+        )
+
+    async def test_an_unknown_mailbox_raises_keyerror(self, pool: Any) -> None:
+        from gmail_archive.imap.mailbox import MailboxSet
+
+        async def factory() -> Any:
+            return pool
+
+        with pytest.raises(KeyError):
+            await MailboxSet(factory).get_mailbox("NoSuchFolderAnywhere")
+
+
+class TestLoadAllMessages:
+    """The UID list a SELECT is built from (#16)."""
+
+    async def test_uids_ascend_and_max_uid_is_tracked(
+        self, seeded_folder: int, pool: Any
+    ) -> None:
+        mailbox = _mailbox(seeded_folder, pool)
+        messages = await mailbox._load_all_messages()
+        uids = [m.uid for m in messages]
+        assert uids == sorted(uids)
+        assert len(uids) == _ROWS
+        assert mailbox._max_uid == _ROWS
+
+    async def test_a_null_internal_date_falls_back(
+        self, seeded_folder: int, pool: Any
+    ) -> None:
+        # ~2.7% of this archive has no Date header. IMAP requires an
+        # INTERNALDATE, so the message must still appear rather than be
+        # dropped or crash the SELECT.
+        messages = await _mailbox(seeded_folder, pool)._load_all_messages()
+        assert all(m.internal_date is not None for m in messages)
+
+
+class TestMessageContentLoading:
+    """FETCH reads the body from the blob store, lazily (#16)."""
+
+    async def test_a_missing_blob_does_not_kill_the_fetch(self, tmp_path: Any) -> None:
+        """`verify` reports missing blobs, so a damaged archive is real.
+
+        An empty body beats killing the client's whole FETCH — losing one
+        message is recoverable, losing the session is not.
+        """
+        from pymap.parsing.specials.fetchattr import FetchRequirement
+        from pymap.parsing.specials.objectid import ObjectId
+
+        from gmail_archive.imap.message import Message
+        from gmail_archive.storage import BlobStore
+
+        absent = "0" * 64
+        msg = Message(
+            1,
+            __import__("datetime").datetime.now(__import__("datetime").UTC),
+            frozenset(),
+            email_id=ObjectId(absent[:16].encode()),
+            thread_id=ObjectId(b"0" * 16),
+            raw_sha256=absent,
+            store=BlobStore(tmp_path),
+        )
+        loaded = await msg.load_content(FetchRequirement.CONTENT)
+        assert loaded is not None
+
+
+@pytest.mark.slow
+class TestEndToEndOverASocket:
+    """A real client, a real socket, a real FETCH (#16).
+
+    "One test of this shape is worth all the unit tests above" — and the
+    history backs that up. Seven IMAP bugs shipped in sequence, each hidden
+    behind the previous, and every one of them would have failed this: auth on
+    a throwaway Identity, a CLI namespace missing pymap's defaults, the pool
+    factory used as an async context manager, UIDs looked up by position, NUL
+    in envelope JSON, off-by-one column indices, and `Message` never loading
+    blob content at all.
+
+    Marked `slow` — it starts a server process — so it is out of the default
+    run and in the explicit one.
+    """
+
+    PASSWORD = "e2e-test-password"
+    RAW = (
+        b"From: sender@example.com\r\nTo: rcpt@example.com\r\n"
+        b"Subject: end to end\r\nDate: Fri, 4 Apr 2025 09:00:00 +0000\r\n"
+        b"Message-ID: <e2e@example.com>\r\n\r\nthe body bytes\r\n"
+    )
+
+    @pytest.fixture
+    def served(self, tmp_path: Any) -> Iterator[tuple[int, str, bytes]]:
+        """Seed one message, start the server, yield (port, folder, raw)."""
+        import socket as _socket
+        import subprocess
+        import time
+
+        import psycopg
+
+        from gmail_archive.storage import BlobStore
+
+        blob_dir = tmp_path / "blobs"
+        blob_dir.mkdir()
+        sha = BlobStore(blob_dir).put(self.RAW).sha256
+        folder = "E2EFolder"
+
+        with psycopg.connect(DSN) as conn:  # type: ignore[arg-type]
+            conn.execute(
+                "insert into blobs (sha256, size_bytes, kind)"
+                " values (%s, %s, 'message') on conflict do nothing",
+                (sha, len(self.RAW)),
+            )
+            conn.execute(
+                "insert into messages (raw_sha256, size_bytes, subject,"
+                " from_addr, internal_date, search_text)"
+                " values (%s, %s, 'end to end', 'sender@example.com',"
+                " '2025-04-04T09:00:00+00', 'end to end')"
+                " on conflict do nothing",
+                (sha, len(self.RAW)),
+            )
+            row = conn.execute(
+                "insert into imap_folders (name, uid_validity) values (%s, 1)"
+                " on conflict (name) do update set uid_validity = 1 returning id",
+                (folder,),
+            ).fetchone()
+            assert row is not None
+            folder_id = int(next(iter(row)))
+            conn.execute(
+                "insert into imap_uids (folder_id, raw_sha256, uid)"
+                " values (%s, %s, 1) on conflict do nothing",
+                (folder_id, sha),
+            )
+            conn.commit()
+
+        # Port 0 then close: a fixed port collides with the real server, which
+        # on this machine is running on 1143 while the suite runs.
+        probe = _socket.socket()
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+        probe.close()
+
+        env = {
+            **os.environ,
+            "GMAIL_ARCHIVE_DATABASE_URL": DSN or "",
+            "GMAIL_ARCHIVE_BLOB_DIR": str(blob_dir),
+            "GMAIL_ARCHIVE_IMAP_PASSWORD": self.PASSWORD,
+        }
+        proc = subprocess.Popen(
+            [
+                "uv",
+                "run",
+                "gmail-archive",
+                "imap",
+                "--host",
+                "127.0.0.1",
+                "--port",
+                str(port),
+            ],
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+        )
+
+        deadline = time.monotonic() + 45
+        while time.monotonic() < deadline:
+            if proc.poll() is not None:
+                out = proc.stdout.read().decode(errors="replace") if proc.stdout else ""
+                pytest.fail(f"IMAP server exited early:\n{out[-2000:]}")
+            try:
+                with _socket.create_connection(("127.0.0.1", port), timeout=1):
+                    break
+            except OSError:
+                time.sleep(0.5)
+        else:
+            proc.kill()
+            pytest.fail(f"IMAP server never bound port {port}")
+
+        try:
+            yield port, folder, self.RAW
+        finally:
+            proc.terminate()
+            try:
+                proc.wait(timeout=15)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+            with psycopg.connect(DSN) as conn:  # type: ignore[arg-type]
+                conn.execute("delete from imap_uids where folder_id = %s", (folder_id,))
+                conn.execute("delete from imap_folders where id = %s", (folder_id,))
+                conn.execute("delete from messages where raw_sha256 = %s", (sha,))
+                conn.execute("delete from blobs where sha256 = %s", (sha,))
+                conn.commit()
+
+    def test_login_list_select_fetch(self, served: tuple[int, str, bytes]) -> None:
+        import imaplib
+
+        port, folder, raw = served
+        client = imaplib.IMAP4("127.0.0.1", port)
+        try:
+            assert client.login("archive", self.PASSWORD)[0] == "OK"
+
+            status, folders = client.list()
+            assert status == "OK"
+            assert any(folder.encode() in line for line in folders if line)
+
+            status, counts = client.select(folder, readonly=True)
+            assert status == "OK"
+            exists = counts[0]
+            assert exists is not None
+            assert int(exists) == 1
+
+            status, data = client.fetch("1", "(RFC822)")
+            assert status == "OK"
+            fetched = next(
+                part[1] for part in data if isinstance(part, tuple) and part[1]
+            )
+            # The whole point: the bytes a client receives are the bytes in the
+            # blob store. `load_content` returning nothing is what #16's
+            # seventh bug was, and it looked exactly like success.
+            assert fetched.replace(b"\r\n", b"\n") == raw.replace(b"\r\n", b"\n")
+        finally:
+            with contextlib.suppress(Exception):
+                client.logout()
+
+    def test_the_wrong_password_is_refused(
+        self, served: tuple[int, str, bytes]
+    ) -> None:
+        import imaplib
+
+        port, _, _ = served
+        client = imaplib.IMAP4("127.0.0.1", port)
+        try:
+            with pytest.raises(imaplib.IMAP4.error):
+                client.login("archive", "not-the-password")
+        finally:
+            with contextlib.suppress(Exception):
+                client.logout()
+
+    def test_append_is_refused_over_the_wire(
+        self, served: tuple[int, str, bytes]
+    ) -> None:
+        # Read-only is the archive's central promise; this is the only test
+        # that checks it the way a client would actually discover it.
+        import imaplib
+        import time
+
+        port, folder, _ = served
+        client = imaplib.IMAP4("127.0.0.1", port)
+        try:
+            client.login("archive", self.PASSWORD)
+            # `imaplib` returns ("NO", ...) for a refusal rather than raising;
+            # it only raises on BAD. Asserting on the status is both correct
+            # and stronger, because it pins the tagged response a real client
+            # shows the user.
+            status, detail = client.append(
+                folder, "", time.localtime(), b"Subject: nope\r\n\r\nbody\r\n"
+            )
+            assert status == "NO"
+            assert b"read-only" in detail[0].lower()
+        finally:
+            with contextlib.suppress(Exception):
+                client.logout()
