@@ -18,6 +18,7 @@ tens of gigabytes.
 | | |
 |---|---|
 | **Source, issues, docs** | https://github.com/evanwtf/gmail-archive |
+| **Getting started** | [docs/getting-started.md](https://github.com/evanwtf/gmail-archive/blob/main/docs/getting-started.md) |
 | **Compose file you need** | [docker-compose.yml](https://github.com/evanwtf/gmail-archive/blob/main/docker-compose.yml) |
 | **Operations guide** | [docs/runbook.md](https://github.com/evanwtf/gmail-archive/blob/main/docs/runbook.md) |
 | **Known defects** | [README](https://github.com/evanwtf/gmail-archive#known-defects) |

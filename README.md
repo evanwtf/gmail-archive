@@ -29,6 +29,10 @@ layout may all change without migration paths. If you find it useful, fork it.
 Several parts do not currently do what their docstrings say. See
 [Known defects](#known-defects) before trusting it with anything.
 
+> **New here?** [docs/getting-started.md](docs/getting-started.md) walks the
+> whole path, starting where you actually start: requesting the Takeout
+> export, which takes hours to days and is the long pole.
+
 ## Quick start
 
 Everything runs in Docker, and everything can be exercised against generated
@@ -224,6 +228,7 @@ Full list, with the test and CI gaps behind them, at the end of
 | [GitHub issues](https://github.com/evanwtf/gmail-archive/issues) | Live status. `open`/`closed` is a real signal; a hand-edited status line goes stale silently |
 | [docs/plan.md](docs/plan.md) | The scoped specification, all ten phases |
 | [docs/progress.md](docs/progress.md) | What was built, how to verify it, and findings worth keeping |
+| [docs/getting-started.md](docs/getting-started.md) | First run, end to end: Takeout export through to searching |
 | [docs/runbook.md](docs/runbook.md) | Operations: ingesting, resuming, verifying, backup and restore, troubleshooting |
 | [docs/adr/](docs/adr/) | Architecture Decision Records |
 | [AGENTS.md](AGENTS.md) | Conventions and repository map for AI agents |

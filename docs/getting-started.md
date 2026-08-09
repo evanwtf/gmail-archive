@@ -1,0 +1,235 @@
+# Getting started
+
+From nothing to a searchable archive of your mail. The whole path is here in
+order; nothing branches until the end.
+
+The long pole is Google, not this software. Requesting the export takes hours
+to days, so **start with step 1 and come back**.
+
+---
+
+## 1. Request the export from Google Takeout
+
+Go to [takeout.google.com](https://takeout.google.com):
+
+1. **Deselect all**, then select **Mail** only. Everything else is wasted
+   download.
+2. Under Mail, leave "All Mail data included" unless you want to skip labels
+   like Spam or Trash. Including them is recommended — you can filter later,
+   and you cannot un-exclude without a new export.
+3. Export once, `.zip` or `.tgz`, and set the split size to the largest
+   offered (50 GB).
+
+That last setting matters. **Google splits large exports into multiple
+files**, and if it splits, you get several archives that each contain part of
+one `.mbox` — you will need all of them, and you ingest each resulting `.mbox`
+separately.
+
+Google emails you when it is ready. Expect hours; a large mailbox can take a
+day or more.
+
+When it arrives, extract it. You are looking for:
+
+```
+Takeout/Mail/All mail Including Spam and Trash.mbox
+```
+
+**Keep this file.** You need it again if the archive is ever rebuilt, and
+requesting a fresh export later gives you a *different* file — mail added
+since, mail deleted since.
+
+---
+
+## 2. Prerequisites
+
+- **Docker** with Compose. That is all you need to run it.
+- **[uv](https://docs.astral.sh/uv/)** and Python 3.13, only for the
+  `set-password` step below and for development.
+
+Postgres comes from Compose. You do not install it.
+
+---
+
+## 3. Set up
+
+```bash
+git clone https://github.com/evanwtf/gmail-archive.git
+cd gmail-archive
+cp .env.example .env
+```
+
+Edit `.env` and set `POSTGRES_PASSWORD` to any long random string:
+
+```bash
+python -c "import secrets; print(secrets.token_urlsafe(32))"
+```
+
+> **Avoid `$` in any `.env` value.** Compose interprets it as a variable
+> reference and the value reaches the container mangled. This is not
+> hypothetical — it silently broke authentication during development, and the
+> only symptom was every correct password being rejected.
+
+---
+
+## 4. Set a password for the web UI
+
+```bash
+uv run gmail-archive set-password
+```
+
+It prompts without echoing and prints one line. Put that line in `.env`,
+replacing the empty `GMAIL_ARCHIVE_WEB_PASSWORD_HASH=`.
+
+**Do not skip this.** Without it the UI is served with no authentication at
+all, and Compose publishes it on every network interface — anyone who can
+reach the port can read your entire mail history. The UI shows a red
+`NO PASSWORD SET` warning until you do.
+
+---
+
+## 5. Start it
+
+```bash
+docker compose pull      # published image; no build needed
+docker compose up -d
+docker compose run --rm web migrate
+curl localhost:8000/healthz
+```
+
+`{"status":"ok"}` means it is up. `migrate` applies the database schema and
+must run before the first ingest.
+
+---
+
+## 6. Ingest your mail
+
+Put the `.mbox` where Compose can see it:
+
+```bash
+cp "/path/to/Takeout/Mail/All mail Including Spam and Trash.mbox" ./data/mbox/
+docker compose --profile ingest run --rm ingest "/mbox/All mail Including Spam and Trash.mbox"
+```
+
+**If Takeout gave you several `.mbox` files, run this once per file.** They
+share one archive; a message appearing in two files is stored once.
+
+### How long
+
+Measured on this project's reference hardware (Intel i3-7100, 4 threads):
+**5,000 synthetic messages, 39 MB, in 7.3 seconds** — about 685 messages per
+second and 5.3 MB/s.
+
+Real mail is larger per message than the synthetic fixture, so throughput is
+bound by bytes rather than by count. For a 20 GB export, budget tens of
+minutes. The ingest logs live `msg/s` and `MiB/s` at every checkpoint, so you
+can extrapolate a few seconds in.
+
+It is resumable: if it is killed, run the same command again and it continues
+from its checkpoint. Only one ingest may run at a time; a second refuses
+rather than corrupting the first.
+
+---
+
+## 7. Classify senders
+
+```bash
+docker compose run --rm web analyze
+```
+
+About five seconds for a few hundred thousand messages. This decides, per
+sender, whether mail is correspondence or automated — and it matters more than
+it sounds: **on the reference archive, 82% of all mail is bulk.** Without it,
+the People and Trends pages have nothing to show and every message counts as
+human.
+
+Re-run it after any later ingest.
+
+---
+
+## 8. Use it
+
+Open **http://localhost:8000** and sign in.
+
+- **Inbox** — the front door, Gmail's own labels and categories
+- **Search** — the box at the top. It covers subject and body text; the
+  operators below reach everything else
+- **People** — who you actually correspond with, who just mails you, and who
+  you have lost touch with
+- **Trends** — how your mail changed over the years
+- **?** in the top right — the full search syntax, always current
+
+Search operators worth knowing immediately:
+
+```
+from:amazon                        sender contains this
+to:someone@example.com             any recipient
+subject:invoice                    subject line
+before:2026-01-01  after:2020-06-01  on:2026-07-30
+label:"Bank Alerts"                exact Gmail label
+has:attachment
+is:unread   is:starred   is:important
+"exact phrase"   invoice -receipt   invoice or receipt
+```
+
+They combine: `from:amazon has:attachment after:2025-01-01 refund`.
+
+---
+
+## 9. Optional: IMAP
+
+Read the archive in a real mail client.
+
+```bash
+# .env needs GMAIL_ARCHIVE_IMAP_PASSWORD set first
+docker compose run --rm web imap-backfill    # once; ~40 minutes for 277k messages
+docker compose --profile imap up -d imap
+```
+
+Then connect to `localhost:1143`, username `archive`, no encryption. Gmail
+labels appear as folders. It is strictly read-only.
+
+Published on loopback only, deliberately: one shared password and no TLS.
+
+---
+
+## Troubleshooting
+
+**Every login fails, including the right password.**
+Check for a `$` in your `.env` values — Compose interpolates it and the
+container receives something different from what you wrote.
+
+**The UI shows a red `NO PASSWORD SET` chip.**
+`GMAIL_ARCHIVE_WEB_PASSWORD_HASH` is empty. See step 4. Until you fix it, the
+archive is readable by anyone on your network.
+
+**Searching feels slow right after ingesting.**
+Ingest refreshes planner statistics itself, but a full vacuum after a large
+import also builds the visibility map:
+`docker compose exec postgres psql -U gmail_archive -d gmail_archive -c "vacuum (analyze) messages, blobs, labels, attachments"`
+
+**"another ingest is already running against this database".**
+Exactly what it says. Wait, or check
+`select * from ingest_runs where status = 'running'`.
+
+**`docker compose run --rm web python ...` does not work.**
+The image's entrypoint *is* the CLI, so the subcommand is the argument:
+`docker compose run --rm web stats`. To reach Postgres directly, use
+`docker compose exec postgres psql -U gmail_archive -d gmail_archive`.
+
+**People and Trends are empty.**
+Run `analyze` (step 7).
+
+**Nothing at localhost:8000.**
+`docker compose logs web`. If the database is unreachable the UI still serves
+and reports it rather than failing blank.
+
+---
+
+## What next
+
+- [README](../README.md) — command reference, architecture, and the current
+  list of known defects
+- [runbook.md](runbook.md) — verifying integrity, exporting, backups,
+  restoring a single message
+- [Known defects](../README.md#known-defects) — worth reading before you rely
+  on this for anything
