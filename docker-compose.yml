@@ -181,6 +181,30 @@ services:
     # exposure. Binding 127.0.0.1 inside a container means the container's own
     # loopback, which nothing outside it can reach.
     command: ["imap", "--host", "0.0.0.0"]
+    # Overrides the image's HEALTHCHECK, which probes http://127.0.0.1:8000 —
+    # that is the *web* server's check, and this container serves IMAP on 1143
+    # and nothing on 8000. Inherited unchanged, it could never pass, so this
+    # service sat permanently `unhealthy`.
+    #
+    # A false alarm is worse than none: a real IMAP failure looked exactly like
+    # the everyday state, so nothing about the status could be acted on. This
+    # opens a TCP connection to the port the server actually listens on and
+    # reads the greeting, which is the cheapest thing that distinguishes
+    # "serving" from "process alive but wedged".
+    healthcheck:
+      test:
+        - CMD
+        - /app/.venv/bin/python
+        - -c
+        - |
+          import socket, sys
+          with socket.create_connection(("127.0.0.1", 1143), timeout=4) as s:
+              s.settimeout(4)
+              sys.exit(0 if s.recv(64).startswith(b"* OK") else 1)
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
     stop_grace_period: 30s
     restart: unless-stopped
     depends_on:
