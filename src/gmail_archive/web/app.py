@@ -42,7 +42,7 @@ from gmail_archive.analytics import (
     yearly_activity,
 )
 from gmail_archive.config import Settings
-from gmail_archive.parser import iter_attachment_payloads
+from gmail_archive.parser import extract_html_body, iter_attachment_payloads
 from gmail_archive.query import (
     CATEGORY_TABS,
     DEFAULT_SEARCH_SORT,
@@ -758,10 +758,24 @@ def message_detail(request: Request, sha256: str) -> HTMLResponse:
     if msg is None:
         raise HTTPException(status_code=404, detail="Message not found")
 
+    # Re-derived from the blob rather than read from a column (#32). The HTML
+    # body was ~1.7 GB of a 6.0 GB database and every byte of it was already
+    # here, in the raw message. This page was reading the blob anyway to list
+    # attachments, so the extra cost is parsing, not I/O.
+    #
+    # A missing blob is not a 404: the message row is real and everything else
+    # on the page — headers, labels, attachments, the plain-text body — is
+    # still worth showing. `verify` is the thing that reports a gap in the
+    # store; a detail page should not be the first place a user learns of one.
+    try:
+        raw_html = extract_html_body(_get_store().get(sha256))
+    except (FileNotFoundError, ValueError):
+        raw_html = ""
+
     # Sanitize first, then defang: nh3 decides what markup survives, and
     # defanging then neutralises every URL that survived with it. Doing it in
     # the other order would let nh3 re-normalise a defanged attribute.
-    sanitized_html = defang(nh3.clean(msg.body_html)) if msg.body_html else ""
+    sanitized_html = defang(nh3.clean(raw_html)) if raw_html else ""
 
     context.update({"msg": msg, "sanitized_html": sanitized_html})
     return templates.TemplateResponse(request, "message.html", context)

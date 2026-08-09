@@ -126,6 +126,7 @@ class Pathology(StrEnum):
     ATTACH_PATH_FILENAME = "attach-path-filename"
     ATTACH_UNICODE_FILENAME = "attach-unicode-filename"
     ATTACH_OVERSIZED = "attach-oversized"
+    HTML_ALTERNATIVE = "html-alternative"
 
 
 # Rates measured against the real export (docs/progress.md). The default mix
@@ -137,6 +138,16 @@ class Pathology(StrEnum):
 # they are opt-in, and ATTACH_OVERSIZED is opt-in for the additional reason that
 # it costs 25 MB a message.
 MEASURED_RATES: dict[Pathology, float] = {
+    # Measured on the live archive: 239,773 of 277,017 messages carry an HTML
+    # body, so this is the *majority* shape of real mail, not a defect. It is
+    # in the pathology list only because that is the mechanism the generator
+    # has for varying structure.
+    #
+    # It was missing entirely until #32 needed it, which meant the synthetic
+    # corpus — the thing standing in for the real export in every test —
+    # contained no HTML at all. A test asserting something about HTML
+    # rendering would have passed by rendering nothing.
+    Pathology.HTML_ALTERNATIVE: 0.866,
     Pathology.LABELS_NESTED: 0.11,
     Pathology.CHARSET_LEGACY: 0.11,
     Pathology.DATE_MISSING: 0.027,
@@ -180,6 +191,16 @@ _CONFLICT_GROUPS: tuple[frozenset[Pathology], ...] = (
     ),
     frozenset({Pathology.QUOTED_FROM, Pathology.BARE_FROM}),
     frozenset({Pathology.BODY_OVER_TSVECTOR, Pathology.BODY_TRUNCATED}),
+    # A legacy-charset or absent-charset text part is built by hand and the
+    # alternative wrapper would obscure which part the assertion is about.
+    frozenset(
+        {
+            Pathology.HTML_ALTERNATIVE,
+            Pathology.CHARSET_LEGACY,
+            Pathology.CHARSET_NONEXISTENT,
+            Pathology.CHARSET_ABSENT,
+        }
+    ),
 )
 
 
@@ -291,6 +312,30 @@ def _text_part(rng: random.Random, active: set[Pathology], body: str) -> MIMEBas
     return part
 
 
+def _alternative(text_part: MIMEBase, body: str) -> MIMEBase:
+    """Wrap a text part with an HTML sibling, the way most real mail is shaped.
+
+    `multipart/alternative` with `text/plain` first and `text/html` second, per
+    RFC 2046: least-faithful representation first, so a client that stops at
+    the first part it understands gets the plain one.
+
+    8bit for the same reason `_text_part` uses it — a base64 part hides its
+    content from the mbox writer, and a defect that cannot reach the file is
+    not a defect the parser will ever see.
+    """
+    html = MIMEBase("text", "html")
+    html.set_param("charset", "utf-8")
+    escaped = body.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    paragraphs = "".join(f"<p>{line}</p>" for line in escaped.split("\n") if line)
+    html.set_payload(f"<html><body>{paragraphs}</body></html>".encode())
+    html.add_header("Content-Transfer-Encoding", "8bit")
+
+    alternative = MIMEMultipart("alternative")
+    alternative.attach(text_part)
+    alternative.attach(html)
+    return alternative
+
+
 def _nest(rng: random.Random, inner: MIMEBase, depth: int) -> MIMEBase:
     """alternative inside related inside mixed, repeating outwards."""
     subtypes = ("alternative", "related", "mixed")
@@ -335,6 +380,8 @@ def _build(
         )
 
     root: MIMEBase = _text_part(rng, active, body)
+    if Pathology.HTML_ALTERNATIVE in active:
+        root = _alternative(root, body)
     attachment = _attachment(rng, active)
 
     if Pathology.BASE64_BAD_PADDING in active:

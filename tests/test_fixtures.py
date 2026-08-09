@@ -259,6 +259,17 @@ def _(msgs: list[bytes]) -> bool:
     return any(".." in (n or "") for n, _ in _attachment_blobs(msgs))
 
 
+@check(Pathology.HTML_ALTERNATIVE)
+def _(msgs: list[bytes]) -> bool:
+    # Both halves matter. An HTML part alone would not be `alternative`, and
+    # `parse()` distinguishes the HTML *body* from an attached .html file by
+    # disposition, so the part must be inline.
+    return any(
+        b"multipart/alternative" in m and b"text/html" in m and b"<html>" in m
+        for m in msgs
+    )
+
+
 @check(Pathology.ATTACH_UNICODE_FILENAME)
 def _(msgs: list[bytes]) -> bool:
     return any(any(ord(c) > 127 for c in (n or "")) for n, _ in _attachment_blobs(msgs))

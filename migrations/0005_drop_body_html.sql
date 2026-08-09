@@ -1,0 +1,30 @@
+-- 0005_drop_body_html: stop storing what the blob store already holds (#32).
+--
+-- Measured on the live archive before this ran:
+--
+--   Postgres database    6.0 GB
+--   blob store          18.9 GB
+--   `messages`           5.5 GB of the 6.0 — 302 MB heap, 3.9 GB TOAST
+--   `body_html`         ~1.7 GB, over a quarter of the database
+--
+-- Every byte of `body_html` is a decoded copy of parts of the raw message,
+-- which is already on disk in the blob store. ADR-001 gives the reason for the
+-- split — "a pg_dump stays a few GB of derived metadata instead of carrying
+-- the whole archive" — and a third of the corpus is not that.
+--
+-- The same argument already applies to attachment bytes, which ingest
+-- deliberately does not store: the message holds them, so the message is
+-- re-parsed on demand. This extends that to the HTML body. The cost is one
+-- blob read on the message detail page, which was already reading the blob to
+-- list attachments, so in practice it is free.
+--
+-- `parser.extract_html_body` re-derives the value. It must produce exactly
+-- what this column held, and `TestHtmlBodyIsRederivableFromTheBlob` checks
+-- that against 800 generated messages plus every pathology. That test found
+-- the generator emitted no HTML at all, which is now fixed at the measured
+-- 86.6% rate.
+--
+-- Not reversible without a re-ingest. It runs as part of the #52 rebuild,
+-- where the data is being rewritten anyway.
+
+alter table messages drop column if exists body_html;

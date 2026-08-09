@@ -27,6 +27,7 @@ from gmail_archive.parser import (
     SEARCH_TEXT_MAX_BYTES,
     ParsedMessage,
     Warn,
+    extract_html_body,
     parse,
     requote_mbox,
     unquote_mbox,
@@ -682,3 +683,63 @@ class TestReceivedDateFallback:
 
     def test_a_received_without_a_semicolon_is_skipped(self) -> None:
         assert self._parse("Received: from x by y").internal_date is None
+
+
+class TestHtmlBodyIsRederivableFromTheBlob:
+    """`extract_html_body(raw)` reproduces what `body_html` used to hold (#32).
+
+    Dropping the column is only safe if the value can be rebuilt exactly. If
+    these ever diverge, a message renders differently after the rebuild than
+    it did before it — and silently, because nothing else compares the two.
+    """
+
+    def test_it_matches_parse_across_a_realistic_corpus(self, tmp_path: Path) -> None:
+        out = tmp_path / "mix.mbox"
+        generate(out, count=800, seed=32)
+        messages = split_mbox(out.read_bytes())
+        assert len(messages) == 800
+
+        compared = 0
+        for raw in messages:
+            body, _ = unquote_mbox(raw)
+            expected = parse(body, already_unquoted=True).body_html
+            assert extract_html_body(body) == expected
+            if expected:
+                compared += 1
+
+        # Guard against the assertion passing because everything was empty.
+        assert compared > 100, f"only {compared} of 800 messages had HTML at all"
+
+    def test_it_matches_across_every_pathology(self, tmp_path: Path) -> None:
+        out = tmp_path / "path.mbox"
+        every = list(Pathology)
+        generate(out, count=len(every) * 4, seed=33, pathologies=every)
+        for raw in split_mbox(out.read_bytes()):
+            body, _ = unquote_mbox(raw)
+            assert (
+                extract_html_body(body) == parse(body, already_unquoted=True).body_html
+            )
+
+    def test_an_html_attachment_is_not_the_body(self, tmp_path: Path) -> None:
+        # The predicate that separates "the HTML body" from "an attached .html
+        # file" is shared with parse(). Getting it wrong here would render an
+        # attachment as if it were the message.
+        raw = (
+            b"Subject: s\r\nFrom: a@example.com\r\n"
+            b'Content-Type: multipart/mixed; boundary="B"\r\n\r\n'
+            b"--B\r\nContent-Type: text/html\r\n\r\n<p>the body</p>\r\n"
+            b"--B\r\nContent-Type: text/html\r\n"
+            b'Content-Disposition: attachment; filename="report.html"\r\n\r\n'
+            b"<p>attached</p>\r\n--B--\r\n"
+        )
+        html = extract_html_body(raw)
+        assert "the body" in html
+        assert "attached" not in html
+        assert html == parse(raw, already_unquoted=True).body_html
+
+    def test_a_plain_text_only_message_yields_nothing(self) -> None:
+        raw = b"Subject: s\r\nFrom: a@example.com\r\n\r\njust text\r\n"
+        assert extract_html_body(raw) == ""
+
+    def test_unparseable_bytes_do_not_raise(self) -> None:
+        assert extract_html_body(b"\xff\xfe not a message") == ""

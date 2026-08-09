@@ -10,7 +10,7 @@ instance. They skip cleanly when GMAIL_ARCHIVE_TEST_DATABASE_URL is not set.
 from __future__ import annotations
 
 import os
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import psycopg
@@ -620,3 +620,89 @@ class TestUndatedTail:
             Path(web_pkg.__file__).parent / "templates" / "mailbox.html"
         ).read_text()
         assert "Messages with no date" in template
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not DSN, reason="needs GMAIL_ARCHIVE_TEST_DATABASE_URL")
+class TestHtmlBodyRendersFromTheBlob:
+    """The detail page renders HTML re-derived from the raw message (#32).
+
+    `body_html` was a column until it turned out to be ~1.7 GB of a 6.0 GB
+    database, every byte of it already present in the blob store. Nothing
+    covered the rendering path when it was a column, which is exactly why
+    moving its source needs a test: a regression here shows up as a message
+    that silently renders no body.
+    """
+
+    RAW = (
+        b"From: sender@example.com\r\nSubject: html message\r\n"
+        b"Date: Fri, 4 Apr 2025 09:00:00 +0000\r\n"
+        b'Content-Type: multipart/alternative; boundary="B"\r\n\r\n'
+        b"--B\r\nContent-Type: text/plain\r\n\r\nplain fallback\r\n"
+        b"--B\r\nContent-Type: text/html\r\n\r\n"
+        b'<p>hello <a href="https://tracker.example/pixel">link</a></p>\r\n'
+        b"--B--\r\n"
+    )
+
+    @pytest.fixture
+    def sha(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[str]:
+        import psycopg
+
+        from gmail_archive.parser import parse
+
+        monkeypatch.setenv("GMAIL_ARCHIVE_BLOB_DIR", str(tmp_path))
+        digest = BlobStore(tmp_path).put(self.RAW).sha256
+        parsed = parse(self.RAW, already_unquoted=True)
+        assert parsed.raw_sha256 == digest
+
+        with psycopg.connect(DSN) as conn:  # type: ignore[arg-type]
+            conn.execute(
+                "insert into blobs (sha256, size_bytes, kind)"
+                " values (%s, %s, 'message') on conflict do nothing",
+                (digest, len(self.RAW)),
+            )
+            conn.execute(
+                "insert into messages"
+                " (raw_sha256, size_bytes, subject, from_addr, internal_date,"
+                "  body_text, search_text, parse_warnings)"
+                " values (%s, %s, %s, %s, now(), %s, %s, '[]'::jsonb)"
+                " on conflict do nothing",
+                (
+                    digest,
+                    len(self.RAW),
+                    parsed.subject,
+                    parsed.from_addr,
+                    parsed.body_text,
+                    parsed.search_text,
+                ),
+            )
+            conn.commit()
+        try:
+            yield digest
+        finally:
+            with psycopg.connect(DSN) as conn:  # type: ignore[arg-type]
+                conn.execute("delete from messages where raw_sha256 = %s", (digest,))
+                conn.execute("delete from blobs where sha256 = %s", (digest,))
+                conn.commit()
+
+    def test_the_html_body_is_rendered(self, client: TestClient, sha: str) -> None:
+        response = client.get(f"/messages/{sha}", headers={"Accept": "text/html"})
+        assert response.status_code == 200
+        assert "hello" in response.text
+
+    def test_urls_in_it_are_still_defanged(self, client: TestClient, sha: str) -> None:
+        # The sanitize-then-defang order has to survive the change of source.
+        response = client.get(f"/messages/{sha}", headers={"Accept": "text/html"})
+        assert "https://tracker.example" not in response.text
+        assert "hxxps://tracker.example" in response.text
+
+    def test_a_missing_blob_still_renders_the_page(
+        self, client: TestClient, sha: str, tmp_path: Path
+    ) -> None:
+        # The row is real and the headers, labels and plain-text body are all
+        # still worth showing. `verify` reports gaps in the store; a detail
+        # page should not be where a user first learns of one.
+        BlobStore(tmp_path).path_for(sha).unlink()
+        response = client.get(f"/messages/{sha}", headers={"Accept": "text/html"})
+        assert response.status_code == 200
+        assert "html message" in response.text

@@ -168,7 +168,6 @@ class MessageFull:
     references_ids: list[str]
     internal_date: datetime | None
     body_text: str | None
-    body_html: str | None
     labels: list[str]
     parse_warnings: list[dict[str, str]]
     #: One entry per attachment: part_index, filename, mime_type, size_bytes.
@@ -469,7 +468,7 @@ def get_message_full(
         "  m.raw_sha256, m.size_bytes, m.message_id, m.thread_id,"
         "  m.subject, m.from_addr, m.to_addrs, m.cc_addrs, m.bcc_addrs,"
         "  m.reply_to, m.in_reply_to, m.references_ids, m.internal_date,"
-        "  m.body_text, m.body_html, m.parse_warnings,"
+        "  m.body_text, m.parse_warnings,"
         "  coalesce((select json_agg(l.label) from labels l"
         "    where l.raw_sha256 = m.raw_sha256), '[]'::json) as labels,"
         "  coalesce((select json_agg(json_build_object("
@@ -499,10 +498,9 @@ def get_message_full(
         references_ids=list(row[11]) if row[11] else [],
         internal_date=row[12],
         body_text=row[13],
-        body_html=row[14],
-        labels=list(row[16]) if row[16] else [],
-        parse_warnings=list(row[15]) if row[15] else [],
-        attachments=list(row[17]) if row[17] else [],
+        labels=list(row[15]) if row[15] else [],
+        parse_warnings=list(row[14]) if row[14] else [],
+        attachments=list(row[16]) if row[16] else [],
     )
 
 

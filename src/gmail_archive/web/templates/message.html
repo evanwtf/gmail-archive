@@ -32,7 +32,7 @@
   </div>
 
   <div class="conv-body">
-    {% if msg.body_html %}
+    {% if sanitized_html %}
     <iframe class="html-body" sandbox="" srcdoc="{{ sanitized_html }}"></iframe>
     {% elif msg.body_text %}
     <pre class="text-body">{{ msg.body_text|defang }}</pre>

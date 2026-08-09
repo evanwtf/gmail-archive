@@ -447,6 +447,40 @@ def is_attachment_part(part: email.message.Message) -> bool:
     )
 
 
+def extract_html_body(raw: bytes) -> str:
+    """Re-derive `body_html` from a raw message, for rendering on demand (#32).
+
+    `body_html` used to be a column. It was ~1.7 GB of a 6.0 GB database — more
+    than a quarter — and every byte of it was already in the blob store, being
+    a decoded copy of parts of the raw message. The same reasoning ADR-001
+    applies to attachment bytes applies here: the archive already holds it, so
+    holding it twice buys nothing but a bigger `pg_dump`.
+
+    The cost is one blob read on the message detail page, which was already
+    reading the blob to list attachments.
+
+    This must produce exactly what `parse()` used to put in `body_html` —
+    same parts, same order, same joining — or a message would render
+    differently after the rebuild than before it. The shared pieces are
+    `_part_text` and the `text/html` predicate; the assembly is duplicated
+    here because `parse()` walks once for four outputs and this walks for one.
+    """
+    try:
+        msg = email.message_from_bytes(raw)
+        walker = list(msg.walk())
+    except Exception:
+        return ""
+
+    warnings: list[ParseWarning] = []
+    chunks: list[str] = []
+    for part in walker:
+        if part.is_multipart() or is_attachment_part(part):
+            continue
+        if (part.get_content_type() or "").lower() == "text/html":
+            chunks.append(_part_text(part, warnings))
+    return "\n".join(c for c in chunks if c)
+
+
 def iter_attachment_payloads(raw: bytes) -> Iterator[tuple[int, Attachment, bytes]]:
     """Re-extract attachments, with their bytes, from a raw message.
 

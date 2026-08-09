@@ -181,7 +181,6 @@ def _worker_task(
             "internal_date": parsed.internal_date,
             "labels": parsed.labels,
             "body_text": parsed.body_text,
-            "body_html": parsed.body_html,
             "search_text": parsed.search_text,
             "attachments": [
                 {
@@ -324,7 +323,6 @@ def _write_batch(
                 m["references_ids"],
                 m["internal_date"],
                 m["body_text"],
-                m["body_html"],
                 m["search_text"],
                 m["parse_warnings"],
             )
@@ -337,7 +335,7 @@ def _write_batch(
                 " gmail_id text, thread_id text, subject text, from_addr text,"
                 " to_addrs text[], cc_addrs text[], bcc_addrs text[],"
                 " reply_to text, in_reply_to text, references_ids text[],"
-                " internal_date timestamptz, body_text text, body_html text,"
+                " internal_date timestamptz, body_text text,"
                 " search_text text, parse_warnings jsonb)"
                 " on commit drop"
             )
@@ -346,7 +344,7 @@ def _write_batch(
                 "raw_sha256, size_bytes, message_id, gmail_id, thread_id, "
                 "subject, from_addr, to_addrs, cc_addrs, bcc_addrs, "
                 "reply_to, in_reply_to, references_ids, internal_date, "
-                "body_text, body_html, search_text, parse_warnings"
+                "body_text, search_text, parse_warnings"
                 ") from stdin"
             ) as copy:
                 for msg_row in msg_rows:
@@ -356,12 +354,12 @@ def _write_batch(
                 "raw_sha256, size_bytes, message_id, gmail_id, thread_id, "
                 "subject, from_addr, to_addrs, cc_addrs, bcc_addrs, "
                 "reply_to, in_reply_to, references_ids, internal_date, "
-                "body_text, body_html, search_text, parse_warnings"
+                "body_text, search_text, parse_warnings"
                 ") select "
                 "raw_sha256, size_bytes, message_id, gmail_id, thread_id, "
                 "subject, from_addr, to_addrs, cc_addrs, bcc_addrs, "
                 "reply_to, in_reply_to, references_ids, internal_date, "
-                "body_text, body_html, search_text, parse_warnings"
+                "body_text, search_text, parse_warnings"
                 " from _staging_messages"
                 " on conflict do nothing"
             )
