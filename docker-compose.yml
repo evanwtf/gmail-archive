@@ -95,7 +95,21 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_USER: gmail_archive
-      POSTGRES_DB: gmail_archive
+      # Must be the same expression the app's DSN uses, or the stack cannot
+      # bootstrap from an empty volume: initdb creates exactly this one
+      # database, and `migrate` can create a schema but not a database. This
+      # was hardcoded while every DSN read GMAIL_ARCHIVE_DB, so any value but
+      # the default produced a cluster with no database to connect to.
+      #
+      # The healthcheck below does not catch it. `pg_isready` probes whether
+      # the server accepts connections and reports success for a database that
+      # does not exist, so postgres goes healthy and the failure surfaces
+      # later, as a traceback out of `migrate`.
+      #
+      # Only read on first initialisation of the data directory. Changing it
+      # against an existing volume does nothing — create the database by hand,
+      # or start over with `docker compose down -v`.
+      POSTGRES_DB: ${GMAIL_ARCHIVE_DB:-gmail_archive}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env — copy .env.example to .env and fill it in}
     # Replaces the server configuration wholesale, so postgresql.conf must stay
     # self-contained; anything omitted there falls back to a built-in default

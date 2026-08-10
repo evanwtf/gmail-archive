@@ -112,6 +112,48 @@ class TestWebService:
         assert depends["init-perms"]["condition"] == "service_completed_successfully"
 
 
+class TestTheDatabaseNameAgreesEverywhere:
+    """Every consumer of the database name must read the same variable.
+
+    `POSTGRES_DB` was hardcoded to `gmail_archive` while every DSN in the file
+    read `${GMAIL_ARCHIVE_DB:-gmail_archive}`. With `GMAIL_ARCHIVE_DB` set to
+    anything else, `docker compose down -v && up` produced a cluster holding
+    one database and an app configured for a different one — and `migrate`
+    creates schemas, not databases, so the stack could not bootstrap at all.
+
+    Nothing else catches this. `pg_isready` reports success for a database
+    that does not exist, so postgres goes healthy and the first symptom is a
+    psycopg traceback several commands later.
+    """
+
+    #: The one expression allowed to name the database anywhere in the file.
+    EXPECTED = "${GMAIL_ARCHIVE_DB:-gmail_archive}"
+
+    def test_initdb_creates_the_database_the_app_connects_to(self) -> None:
+        assert _service("postgres")["environment"]["POSTGRES_DB"] == self.EXPECTED, (
+            "POSTGRES_DB must be the same expression the DSNs use; initdb "
+            "creates exactly this database and nothing else can create it"
+        )
+
+    def test_every_dsn_uses_it(self) -> None:
+        found = 0
+        for name, service in _compose()["services"].items():
+            dsn = (service.get("environment") or {}).get("GMAIL_ARCHIVE_DATABASE_URL")
+            if dsn is None:
+                continue
+            found += 1
+            assert str(dsn).endswith(f"/{self.EXPECTED}"), (
+                f"service {name!r} hardcodes a database name in its DSN"
+            )
+        # A guard on the guard: if the DSNs are ever renamed out from under
+        # this loop it would pass by iterating over nothing.
+        assert found >= 3, f"expected DSNs on web, imap and ingest; found {found}"
+
+    def test_the_healthcheck_probes_it_too(self) -> None:
+        probe = " ".join(str(p) for p in _service("postgres")["healthcheck"]["test"])
+        assert self.EXPECTED in probe
+
+
 class TestPostgresService:
     def test_major_version_is_pinned(self) -> None:
         image = _service("postgres")["image"]
