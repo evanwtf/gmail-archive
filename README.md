@@ -78,9 +78,90 @@ measured against a real 20-year export; naming them produces each at least
 once. `--seed` is byte-reproducible, and every generated address is confined to
 an RFC 2606 reserved domain (`example.com`, `.invalid`, `.test`).
 
-**After a large ingest, run `vacuum (analyze)`** — stale planner statistics
-make search take seconds instead of milliseconds. See
+## After an ingest
+
+An ingest writes messages, blobs and labels. Three things it does **not**
+write, because each needs a pass over the whole corpus:
+
+```bash
+docker compose run --rm web analyze        # sender classification
+docker compose run --rm web verify --deep  # integrity
+docker compose run --rm web imap-backfill  # IMAP projection
+```
+
+On the 277,020-message reference corpus: `analyze` 8s, `verify --deep`
+3m 30s, `imap-backfill` the slow one by an order of magnitude. See
+[Measured performance](#measured-performance).
+
+| | without it | notes |
+|---|---|---|
+| `analyze` | `/people` shows "No sender profiles yet" | Signals are corpus-wide ("has this address ever been replied to?"), so they cannot be computed per message during ingest. Manual overrides are preserved. |
+| `verify --deep` | nothing — but you have not checked | Re-hashes every blob against its own sha256 filename. Expect zeros across `orphaned_blobs`, `missing_blobs`, `deep_corrupt`, `sighting_mismatch`. |
+| `imap-backfill` | IMAP shows folders with no messages | Envelope and bodystructure. The slow one, and resumable, so an interrupt costs only the time already spent. |
+
+`ANALYZE` is **not** on that list: ingest runs it itself before declaring
+success, so planner statistics are current the moment it finishes. A manual
+`VACUUM` is still worth doing — it builds the visibility map that lets
+aggregate queries use index-only scans — but it is an optimisation, not a
+prerequisite. See
 [docs/runbook.md](docs/runbook.md#after-a-large-ingest-vacuum-and-analyze).
+
+> **Run `imap-backfill` once, after the *initial* ingest.** Re-running it after
+> a second ingest aborts partway through with earlier folders already
+> committed: the envelope half is safe to repeat, but the UID half assigns UIDs
+> by position and collides on `(folder_id, uid)` as soon as the message set has
+> changed. [#13](https://github.com/evanwtf/gmail-archive/issues/13).
+
+## Starting over from the export
+
+Re-ingesting is idempotent, so this is only for a genuine clean slate — a
+change that rewrites every `raw_sha256`, or a rebuild you want to be sure of.
+**If you only want to apply a parser fix without destroying anything, use
+[the side-by-side rebuild](docs/runbook.md#rebuilding-the-archive-from-scratch)
+instead**; it keeps the working archive intact and makes the cutover one line
+of `.env`.
+
+To actually start over:
+
+```bash
+docker compose down -v      # -v is the part that matters
+sudo rm -rf ./data/* "$GMAIL_ARCHIVE_BLOB_HOST_PATH"/*
+docker compose up -d postgres
+docker compose run --rm web migrate
+docker compose --profile ingest run --rm ingest "/mbox/All.mbox"
+```
+
+Three things go wrong here, and they go wrong independently — each one leaves
+you believing you started fresh when you did not.
+
+**`docker compose down` does not delete the database.** It removes containers
+and the network; the data lives in the `pgdata` volume and survives everything
+but `down -v`. Deleting the blob store while the database survives is the worst
+of the three outcomes: every row is still there, every body is gone, and
+because a missing blob is deliberately not a 404, pages render with headers and
+an empty body rather than an error.
+
+**A surviving `ingest_runs` row makes the next ingest a resume, not a restart.**
+Runs are looked up by `source_path` and continue from `checkpoint_offset`, so a
+stale record silently skips everything below it. The line to read is:
+
+```
+resuming at offset 0 (0 messages skipped, 277020 pending)
+```
+
+`0 messages skipped` means a genuinely fresh start. Any other number means it
+found a checkpoint, and you did not get what you asked for.
+
+**`POSTGRES_DB` is only read when the data directory is first initialised.**
+It tracks `GMAIL_ARCHIVE_DB`, so a fresh volume creates the right database —
+but changing that variable against an *existing* volume does nothing, and
+`migrate` creates schemas, not databases. The symptom is a psycopg
+`OperationalError: database "..." does not exist`, several commands after the
+mistake, because `pg_isready` reports success for a database that is not there
+and Postgres therefore goes healthy. Fix it with a one-off
+`create database`, or start from `down -v`.
+
+Finish with the three commands from [After an ingest](#after-an-ingest).
 
 ## Usage
 
