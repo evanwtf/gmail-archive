@@ -176,3 +176,30 @@ class TestFilesize:
         from gmail_archive.web.filters import filesize
 
         assert "." not in filesize(412_345_678)
+
+
+class TestDuration:
+    """Import wall-clock, shown on /imports."""
+
+    @pytest.mark.parametrize(
+        ("seconds", "expected"),
+        [
+            (0, "0s"),
+            (18, "18s"),
+            (59.9, "59s"),
+            (60, "1m 00s"),
+            (2585, "43m 05s"),
+            (3600, "1h 00m"),
+            (7860, "2h 11m"),
+        ],
+    )
+    def test_spans_read_at_a_glance(self, seconds: float, expected: str) -> None:
+        from gmail_archive.web.filters import duration
+
+        assert duration(seconds) == expected
+
+    def test_an_unfinished_run_is_a_dash(self) -> None:
+        # Matches `filesize`: "0s" would claim the run took no time.
+        from gmail_archive.web.filters import duration
+
+        assert duration(None) == "—"

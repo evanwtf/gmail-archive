@@ -246,6 +246,45 @@ class TestHtmlRoutesWithDb:
         assert response.status_code == 200
         assert b"Archive statistics" in response.content
 
+    def test_imports_page_renders(self, client: TestClient) -> None:
+        response = client.get("/imports", headers={"Accept": "text/html"})
+        assert response.status_code == 200
+        assert b"Imports" in response.content
+
+    def test_the_import_badge_appears_once_something_has_finished(
+        self, client: TestClient
+    ) -> None:
+        """The badge is chrome, so it has to survive on an ordinary page.
+
+        Seeded here rather than asserted unconditionally: a fresh test
+        database has no completed run, and the badge is correctly absent then.
+        """
+        import os
+
+        import psycopg
+
+        dsn = os.environ["GMAIL_ARCHIVE_TEST_DATABASE_URL"]
+        with psycopg.connect(dsn) as conn:
+            row = conn.execute(
+                "insert into ingest_runs (source_path, finished_at, status)"
+                " values ('/tmp/badge.mbox', '2021-05-06 07:08:09+00', 'complete')"
+                " returning id"
+            ).fetchone()
+            assert row is not None
+            run_id = int(next(iter(row)))
+            conn.commit()
+        try:
+            content = client.get("/", headers={"Accept": "text/html"}).content
+            # Both forms: the absolute stamp and the age beside it. Not
+            # asserted as a literal date — another test's completed run may be
+            # the more recent one, and the badge shows the newest.
+            assert b"import-chip-when" in content
+            assert b"import-chip-ago" in content
+        finally:
+            with psycopg.connect(dsn) as conn:
+                conn.execute("delete from ingest_runs where id = %s", (run_id,))
+                conn.commit()
+
     def test_messages_page_returns_html(self, client: TestClient) -> None:
         response = client.get("/messages", headers={"Accept": "text/html"})
         assert response.status_code == 200

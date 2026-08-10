@@ -189,6 +189,27 @@ a { color: inherit; text-decoration: none; }
   cursor: help;
 }
 
+/* How old the archive is. Sits beside the read-only chip and is shaped like
+   it, but is a link rather than a tooltip-only chip — /imports is where the
+   detail lives. */
+.import-chip {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 11px; letter-spacing: .4px;
+  color: var(--text-dim);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 4px 10px;
+  background: var(--surface);
+  text-decoration: none;
+  white-space: nowrap;
+}
+.import-chip:hover { background: var(--hover); color: var(--text); }
+.import-chip-label { text-transform: uppercase; }
+.import-chip-when { font-variant-numeric: tabular-nums; color: var(--text); }
+.import-chip-ago { opacity: .7; }
+
 /* ── Shell ────────────────────────────────────────────────────── */
 .shell {
   display: flex;
@@ -484,6 +505,44 @@ a { color: inherit; text-decoration: none; }
 
 .stats-grid + .kv { padding: 0 20px 40px; }
 
+/* ── Imports ──────────────────────────────────────────────────── */
+/* One card per run, so several runs over one file stack legibly rather than
+   becoming rows in a table nobody can read across. */
+.import-card {
+  margin: 16px 20px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.import-head {
+  display: flex; align-items: center; gap: 10px;
+  padding: 12px 16px;
+  background: var(--bg);
+  border-bottom: 1px solid var(--line);
+}
+
+/* The path is the widest thing on the page and the least interesting when it
+   does not fit; truncate it and leave the whole thing in the tooltip. */
+.import-source {
+  font-size: 12px; color: var(--text-dim);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+.import-status {
+  font-size: 11px; text-transform: uppercase; letter-spacing: .4px;
+  padding: 3px 9px; border-radius: 999px; flex: none;
+  background: var(--surface); border: 1px solid var(--line); color: var(--text-dim);
+}
+.import-status-complete    { background: #e6f4ea; border-color: #b7e0c4; color: #137333; }
+.import-status-running     { background: #e8f0fe; border-color: #b9d0f8; color: #1967d2; }
+.import-status-failed,
+.import-status-interrupted { background: #fce8e6; border-color: #f5c6c2; color: #b31412; }
+
+.import-kv { padding: 0 16px; }
+.import-ago { color: var(--text-dim); }
+.import-grid { padding: 8px 16px 16px; }
+
 /* ── Label wall ───────────────────────────────────────────────── */
 .chipwall { display: flex; flex-wrap: wrap; gap: 8px; padding: 20px; }
 
@@ -569,6 +628,12 @@ a { color: inherit; text-decoration: none; }
   .topsearch { height: 40px; padding: 0 10px; }
   .topsearch-input { font-size: 16px; } /* 16px or Safari zooms on focus */
   .readonly-chip { display: none; }     /* the archive is read-only anyway */
+  /* The chip stays — how stale the archive is matters on a phone too — but
+     only the relative age survives; the absolute date is in the tooltip and
+     on /imports, and the top bar has no room for both. */
+  .import-chip { padding: 4px 8px; }
+  .import-chip-label, .import-chip-when { display: none; }
+  .import-chip-ago { opacity: 1; }
   .topnav { display: none; }            /* moved into the rail strip below */
 
   /* ── Rail as a scrolling strip of pills ── */

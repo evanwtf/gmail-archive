@@ -19,6 +19,8 @@ from gmail_archive.query import (
     MessageRow,
     get_message,
     get_message_full,
+    ingest_runs,
+    last_import_finished,
     list_labels,
     list_messages,
     list_messages_keyset,
@@ -595,3 +597,101 @@ class TestLikeMetacharactersAreLiteral:
 
     def test_an_ordinary_value_is_unaffected(self, seeded: dict[str, str]) -> None:
         assert "someone@example.com" in self._from_addrs("from:someone")
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not DSN, reason="needs GMAIL_ARCHIVE_TEST_DATABASE_URL")
+class TestImportProvenance:
+    """`ingest_runs` and `last_import_finished`, which date the archive.
+
+    The badge in the top bar is the only thing in the UI that says how stale
+    the contents are, so the rule it depends on — only a cleanly finished run
+    counts — is worth pinning down.
+    """
+
+    @pytest.fixture
+    def runs(self) -> Iterator[dict[str, int]]:
+        import psycopg
+
+        source = "/tmp/test-import-provenance.mbox"
+        ids: dict[str, int] = {}
+        with psycopg.connect(DSN) as conn:  # type: ignore[arg-type]
+            for name, status, finished in (
+                ("done", "complete", "2020-01-02 03:04:05+00"),
+                ("broke", "failed", "2024-06-07 08:09:10+00"),
+            ):
+                row = conn.execute(
+                    "insert into ingest_runs (source_path, started_at,"
+                    " finished_at, messages_seen, messages_new, status)"
+                    " values (%s, '2020-01-01 00:00:00+00', %s, 5, 5, %s)"
+                    " returning id",
+                    (f"{source}.{name}", finished, status),
+                ).fetchone()
+                assert row is not None
+                ids[name] = int(next(iter(row)))
+            conn.commit()
+        try:
+            yield ids
+        finally:
+            with psycopg.connect(DSN) as conn:  # type: ignore[arg-type]
+                for run_id in ids.values():
+                    conn.execute("delete from ingest_runs where id = %s", (run_id,))
+                conn.commit()
+
+    def test_a_failed_run_does_not_date_the_archive(self, runs: dict[str, int]) -> None:
+        """The whole point of `last_import_finished` over `max(finished_at)`.
+
+        The failed run finished four years later than the complete one. If it
+        counted, the badge would claim a freshness the archive does not have.
+        """
+        import psycopg
+
+        with psycopg.connect(DSN) as conn:  # type: ignore[arg-type]
+            when = last_import_finished(conn)
+        assert when is not None
+        assert when.year != 2024
+
+    def test_runs_are_listed_newest_first(self, runs: dict[str, int]) -> None:
+        import psycopg
+
+        with psycopg.connect(DSN) as conn:  # type: ignore[arg-type]
+            listed = ingest_runs(conn)
+        started = [r.started_at for r in listed]
+        assert started == sorted(started, reverse=True)
+
+    def test_a_run_carries_its_source_and_status(self, runs: dict[str, int]) -> None:
+        import psycopg
+
+        with psycopg.connect(DSN) as conn:  # type: ignore[arg-type]
+            by_id = {r.id: r for r in ingest_runs(conn)}
+        broke = by_id[runs["broke"]]
+        assert broke.status == "failed"
+        assert broke.source_path.endswith(".broke")
+        # No sightings were written against this path, so the count is None
+        # rather than a misleading zero-that-might-be-a-real-zero.
+        assert broke.source_sightings is None
+        assert broke.newest_message is None
+
+    def test_duration_is_none_while_a_run_is_unfinished(self) -> None:
+        from datetime import UTC, datetime
+
+        from gmail_archive.query import IngestRun
+
+        run = IngestRun(
+            id=1,
+            source_path="x",
+            started_at=datetime(2020, 1, 1, tzinfo=UTC),
+            finished_at=None,
+            checkpoint_offset=0,
+            messages_seen=0,
+            messages_new=0,
+            failures=0,
+            status="running",
+            account_address=None,
+            source_sightings=None,
+            oldest_message=None,
+            newest_message=None,
+        )
+        assert run.duration_seconds is None
+        run.finished_at = datetime(2020, 1, 1, 0, 43, 5, tzinfo=UTC)
+        assert run.duration_seconds == 2585.0

@@ -55,7 +55,9 @@ from gmail_archive.query import (
     get_message,
     get_message_full,
     get_thread_messages,
+    ingest_runs,
     label_counts,
+    last_import_finished,
     list_labels,
     list_messages_keyset,
     search,
@@ -73,6 +75,7 @@ from gmail_archive.web.auth import (
 )
 from gmail_archive.web.filters import (
     defang,
+    duration,
     filesize,
     gmail_date,
     highlight_snippet,
@@ -169,6 +172,7 @@ templates.env.filters["sender_name"] = sender_name
 templates.env.filters["defang"] = defang
 templates.env.filters["filesize"] = filesize
 templates.env.filters["highlight_snippet"] = highlight_snippet
+templates.env.filters["duration"] = duration
 app.mount("/static", StaticFiles(directory=str(HERE / "static")), name="static")
 
 
@@ -525,6 +529,10 @@ def _chrome(conn: psycopg.Connection[object]) -> dict[str, Any]:
         "mailbox_counts": counts,
         "category_tabs": CATEGORY_TABS,
         "user_labels": user_labels[:20],
+        # Dates the archive itself. Without it there is nothing anywhere in
+        # the UI that says how old the contents are, and an archive that looks
+        # current but was imported a year ago is worse than one that says so.
+        "last_import": last_import_finished(conn),
     }
 
 
@@ -780,6 +788,29 @@ def stats_page(request: Request) -> HTMLResponse:
     context["stats"] = s
     context["db"] = db
     return templates.TemplateResponse(request, "index.html", context)
+
+
+@app.get("/imports", response_class=HTMLResponse)
+def imports_page(request: Request) -> HTMLResponse:
+    """Provenance: which exports this archive was built from, and when.
+
+    Separate from `/stats`, which answers "what is in here". This answers "how
+    did it get here and how stale is it" — the question the badge in the top
+    bar raises and has no room to answer.
+    """
+    try:
+        with _get_conn() as conn:
+            runs = ingest_runs(conn)
+            context = _chrome(conn)
+    except DB_ERRORS:
+        return templates.TemplateResponse(
+            request,
+            "error.html",
+            {"message": "Database is unavailable."},
+            status_code=503,
+        )
+    context["runs"] = runs
+    return templates.TemplateResponse(request, "imports.html", context)
 
 
 @app.get("/messages/{sha256}", response_class=HTMLResponse)

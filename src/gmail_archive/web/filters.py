@@ -126,6 +126,24 @@ def filesize(value: int | float | None) -> str:
     return f"{size:.1f} PB"
 
 
+def duration(seconds: float | None) -> str:
+    """A wall-clock span as ``43m 05s``, ``2h 11m``, ``18s``.
+
+    Coarsest unit first with the next one down beside it, which is enough
+    precision to compare two import runs and not so much that a 43-minute
+    ingest reads as ``2573.02 seconds``. Anything under a minute keeps whole
+    seconds; a sub-second run is a run that did nothing.
+    """
+    if seconds is None:
+        return "—"
+    total = int(seconds)
+    if total < 60:
+        return f"{total}s"
+    if total < 3600:
+        return f"{total // 60}m {total % 60:02d}s"
+    return f"{total // 3600}h {(total % 3600) // 60:02d}m"
+
+
 def gmail_date(value: datetime | None, now: datetime | None = None) -> str:
     """Format a date the way Gmail's message list does.
 

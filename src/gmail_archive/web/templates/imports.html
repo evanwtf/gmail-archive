@@ -1,0 +1,96 @@
+{% extends "base.html" %}
+{% block title %}Imports — gmail-archive{% endblock %}
+{% block content %}
+<div class="listbar">
+  <span class="listbar-title">Imports</span>
+  <span class="listbar-count">{{ runs|length }}</span>
+</div>
+
+{% if not runs %}
+<p class="empty">No import runs recorded. Either nothing has been ingested
+  into this database, or it predates run bookkeeping.</p>
+{% else %}
+
+<p class="stats-note">Where the mail in this archive came from. An export
+  carries no timestamp of its own, so <strong>newest message</strong> is the
+  best available stand-in for when the dump was taken — a Takeout export
+  contains mail up to the moment it was generated.</p>
+
+{% for run in runs %}
+<div class="import-card">
+  <div class="import-head">
+    <span class="import-status import-status-{{ run.status }}">{{ run.status }}</span>
+    <code class="import-source" title="{{ run.source_path }}">{{ run.source_path }}</code>
+  </div>
+
+  <table class="kv import-kv">
+    <tr>
+      <th>Started</th>
+      <td>{{ run.started_at.strftime('%Y-%m-%d %H:%M:%S UTC') }}
+        <span class="import-ago">{{ run.started_at|relative_date }}</span></td>
+    </tr>
+    <tr>
+      <th>Finished</th>
+      <td>
+        {% if run.finished_at %}
+        {{ run.finished_at.strftime('%Y-%m-%d %H:%M:%S UTC') }}
+        <span class="import-ago">{{ run.finished_at|relative_date }}</span>
+        {% else %}
+        <span class="import-ago">still running</span>
+        {% endif %}
+      </td>
+    </tr>
+    <tr><th>Duration</th><td>{{ run.duration_seconds|duration }}</td></tr>
+    <tr>
+      <th>Newest message</th>
+      <td>
+        {% if run.newest_message %}
+        {{ run.newest_message.strftime('%Y-%m-%d %H:%M:%S UTC') }}
+        <span class="import-ago">{{ run.newest_message|relative_date }}</span>
+        {% else %}—{% endif %}
+      </td>
+    </tr>
+    <tr>
+      <th>Oldest message</th>
+      <td>{% if run.oldest_message %}{{ run.oldest_message.strftime('%Y-%m-%d') }}{% else %}—{% endif %}</td>
+    </tr>
+    <tr><th>Account</th><td>{{ run.account_address|default('—', true) }}</td></tr>
+  </table>
+
+  <div class="stats-grid import-grid">
+    <div class="stat-card">
+      <span class="stat-value">{{ "{:,}".format(run.messages_seen) }}</span>
+      <span class="stat-label">Messages read</span>
+    </div>
+    <div class="stat-card">
+      <span class="stat-value">{{ "{:,}".format(run.messages_new) }}</span>
+      <span class="stat-label">New to the archive</span>
+    </div>
+    {# Not the same number as `messages_seen`: a resumed import is several
+       runs over one file, and this counts the file's total. Shown so a
+       partial run is visibly partial. #}
+    <div class="stat-card">
+      <span class="stat-value">{{ "{:,}".format(run.source_sightings) if run.source_sightings else "—" }}</span>
+      <span class="stat-label">Stored from this file</span>
+    </div>
+    <div class="stat-card">
+      <span class="stat-value">{{ "{:,}".format(run.failures) }}</span>
+      <span class="stat-label">Failures</span>
+    </div>
+    {% if run.duration_seconds %}
+    <div class="stat-card">
+      <span class="stat-value">{{ "{:,.0f}".format(run.messages_seen / run.duration_seconds) }}</span>
+      <span class="stat-label">Messages / second</span>
+    </div>
+    {% endif %}
+    {% if run.status != 'complete' %}
+    <div class="stat-card">
+      <span class="stat-value">{{ run.checkpoint_offset|filesize }}</span>
+      <span class="stat-label">Resume point</span>
+    </div>
+    {% endif %}
+  </div>
+</div>
+{% endfor %}
+{% endif %}
+{% endblock %}

@@ -196,6 +196,115 @@ class LabelCount:
     message_count: int
 
 
+@dataclass
+class IngestRun:
+    """One `ingest` invocation, with what it read and what it produced."""
+
+    id: int
+    source_path: str
+    started_at: datetime
+    finished_at: datetime | None
+    checkpoint_offset: int
+    messages_seen: int
+    messages_new: int
+    failures: int
+    status: str
+    account_address: str | None
+    #: Sightings recorded against this run's source file. Not the same as
+    #: `messages_seen`, which counts what this run walked past: a resumed
+    #: import has several runs over one file, and the file's sighting count is
+    #: the total across all of them. Null when the source has no sightings —
+    #: a run that failed before writing anything.
+    source_sightings: int | None
+    #: Oldest and newest message in the source file. The newest is the closest
+    #: thing to a timestamp on the export itself: a Takeout dump contains mail
+    #: up to the moment it was generated, and nothing records that moment
+    #: anywhere else. Both use the same plausibility window as `stats()`, so a
+    #: message dated 2611 does not become the export's date.
+    oldest_message: datetime | None
+    newest_message: datetime | None
+
+    @property
+    def duration_seconds(self) -> float | None:
+        """Wall-clock time, or None while the run is still going."""
+        if self.finished_at is None:
+            return None
+        return (self.finished_at - self.started_at).total_seconds()
+
+
+def ingest_runs(conn: psycopg.Connection[object]) -> list[IngestRun]:
+    """Every import ever run against this database, newest first.
+
+    Two queries rather than one. The per-source message-date bounds need a
+    join across all 277k sightings and takes about 700ms on the reference
+    archive; folding it in as a correlated subquery would pay that once per
+    run. Grouped separately and merged here, it is paid once regardless — and
+    the bounds are a property of the *file*, not of the run, so several
+    resumed runs over one export correctly report the same range.
+    """
+    by_source: dict[str, tuple[int, datetime | None, datetime | None]] = {}
+    for raw in conn.execute(
+        "select s.source_path, count(*),"
+        "  min(m.internal_date) filter (where m.internal_date >= '1970-01-01'"
+        "    and m.internal_date <= now() + interval '90 days'),"
+        "  max(m.internal_date) filter (where m.internal_date >= '1970-01-01'"
+        "    and m.internal_date <= now() + interval '90 days')"
+        " from message_sightings s"
+        " join messages m on m.raw_sha256 = s.raw_sha256"
+        " group by s.source_path"
+    ).fetchall():
+        r = _row(raw)
+        by_source[str(r[0])] = (int(r[1]), r[2], r[3])
+
+    runs = []
+    for raw in conn.execute(
+        "select r.id, r.source_path, r.started_at, r.finished_at,"
+        "  r.checkpoint_offset, r.messages_seen, r.messages_new, r.failures,"
+        "  r.status, a.address"
+        " from ingest_runs r"
+        " left join accounts a on a.id = r.account_id"
+        " order by r.started_at desc, r.id desc"
+    ).fetchall():
+        r = _row(raw)
+        sightings, oldest, newest = by_source.get(str(r[1]), (0, None, None))
+        runs.append(
+            IngestRun(
+                id=int(r[0]),
+                source_path=str(r[1]),
+                started_at=r[2],
+                finished_at=r[3],
+                checkpoint_offset=int(r[4]),
+                messages_seen=int(r[5]),
+                messages_new=int(r[6]),
+                failures=int(r[7]),
+                status=str(r[8]),
+                account_address=r[9],
+                source_sightings=sightings or None,
+                oldest_message=oldest,
+                newest_message=newest,
+            )
+        )
+    return runs
+
+
+def last_import_finished(conn: psycopg.Connection[object]) -> datetime | None:
+    """When the most recent *completed* import finished, for the chrome badge.
+
+    Deliberately narrower than `max(finished_at)`: an interrupted or failed
+    run has a `finished_at` too, and dating the archive from one would claim
+    freshness the archive does not have. Returns None until something has
+    finished cleanly — including on a database whose data predates run
+    bookkeeping — and the badge is then omitted rather than guessed at.
+
+    Called from `_chrome`, so it runs on every page render. `ingest_runs` has
+    one row per import; this is a scan of a table that will never be large.
+    """
+    raw = conn.execute(
+        "select max(finished_at) from ingest_runs where status = 'complete'"
+    ).fetchone()
+    return None if raw is None else _row(raw)[0]
+
+
 def stats(conn: psycopg.Connection[object]) -> ArchiveStats:
     """Return aggregate statistics about the archive."""
     raw = conn.execute(

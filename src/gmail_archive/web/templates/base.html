@@ -39,6 +39,17 @@
 
   <div class="topbar-right">
     <span class="readonly-chip" title="This archive is immutable. Nothing here can send, delete, or modify mail.">read-only</span>
+    {# Dates the archive. Absent rather than guessed when no import has ever
+       finished cleanly — see `last_import_finished`. A link, because the
+       obvious next question is "imported from what?" #}
+    {% if last_import %}
+    <a class="import-chip" href="/imports"
+       title="Last completed import finished {{ last_import.strftime('%Y-%m-%d %H:%M UTC') }}. Nothing received after that is in here.">
+      <span class="import-chip-label">imported</span>
+      <span class="import-chip-when">{{ last_import.strftime('%Y-%m-%d') }}</span>
+      <span class="import-chip-ago">{{ last_import|relative_date }}</span>
+    </a>
+    {% endif %}
     {% if not authenticated %}
     <span class="auth-warning" title="Anyone who can reach this port can read the archive. Run: gmail-archive set-password">NO PASSWORD SET</span>
     {% else %}
@@ -96,6 +107,10 @@
     <a class="rail-item rail-mobile-only" href="/stats">
       <span class="rail-icon rail-icon-stats" aria-hidden="true"></span>
       <span class="rail-label">Stats</span>
+    </a>
+    <a class="rail-item rail-mobile-only" href="/imports">
+      <span class="rail-icon rail-icon-stats" aria-hidden="true"></span>
+      <span class="rail-label">Imports</span>
     </a>
 
 
