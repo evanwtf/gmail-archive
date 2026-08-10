@@ -9,7 +9,7 @@ real database.
 from __future__ import annotations
 
 import os
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -24,7 +24,9 @@ from gmail_archive.ingest import (
     WorkerResult,
     _checkpoint,
     _ensure_run,
+    _eta,
     _finalize_run,
+    _format_remaining,
     _write_batch,
     ingest,
 )
@@ -1029,3 +1031,72 @@ class TestTwoOverlappingTakeoutExports:
         # two messages — the header is part of the hashed bytes.
         assert messages == (2,)
         assert labels == [("Archived",), ("Inbox",)]
+
+
+class TestEta:
+    """The countdown on every checkpoint line.
+
+    No database and no mbox: this is arithmetic over a clock, and it should
+    be testable without either.
+    """
+
+    T0 = datetime(2026, 8, 10, 12, 0, 0, tzinfo=UTC)
+
+    def _at(self, seconds: int) -> datetime:
+        return self.T0 + timedelta(seconds=seconds)
+
+    def test_halfway_through_predicts_the_elapsed_time_again(self) -> None:
+        # 500 of 1000 bytes in 60s → 60s left.
+        text = _eta(500, 1000, self.T0, self._at(60))
+        assert "(1m)" in text
+
+    def test_the_absolute_time_is_the_relative_one_added_to_now(self) -> None:
+        now = self._at(60)
+        text = _eta(500, 1000, self.T0, now)
+        expected = (now + timedelta(seconds=60)).astimezone()
+        assert f"{expected:%H:%M:%S}" in text
+
+    @pytest.mark.parametrize(
+        ("done", "total", "elapsed"),
+        [
+            (0, 1000, 60),  # nothing finished yet: no rate to extrapolate
+            (500, 1000, 0),  # no elapsed time: division by zero
+        ],
+    )
+    def test_degenerate_inputs_say_unknown_rather_than_guess(
+        self, done: int, total: int, elapsed: int
+    ) -> None:
+        # The first checkpoint of a run hits the zero-elapsed case, and an
+        # exception there would kill an ingest measured in hours over a log
+        # line — so every one of these must be an honest string, not a raise.
+        assert _eta(done, total, self.T0, self._at(elapsed)) == "ETA unknown"
+
+    @pytest.mark.parametrize(("done", "total"), [(1000, 1000), (1100, 1000)])
+    def test_finished_work_is_now_not_unknown(self, done: int, total: int) -> None:
+        """The last checkpoint of every run hits this.
+
+        Over-counting is included because nothing guarantees the scanned
+        lengths sum to exactly what the workers report; it must read as
+        finished, not as negative time remaining.
+        """
+        assert _eta(done, total, self.T0, self._at(60)) == "ETA now"
+
+    def test_it_extrapolates_from_the_whole_run_not_the_last_moment(self) -> None:
+        """A slow patch late on must not blow the estimate up.
+
+        Same total progress, same total elapsed — the estimate cannot depend
+        on how the work was distributed, because it only ever sees the mean.
+        """
+        assert _eta(500, 1000, self.T0, self._at(60)) == _eta(
+            500, 1000, self.T0, self._at(60)
+        )
+
+    @pytest.mark.parametrize(
+        ("seconds", "expected"),
+        [(0, "0s"), (45, "45s"), (59.6, "1m"), (2585, "43m"), (3599.6, "1h 00m")],
+    )
+    def test_remaining_time_keeps_two_units_at_most(
+        self, seconds: float, expected: str
+    ) -> None:
+        # "2h 11m 07s" claims a precision an extrapolation does not have.
+        assert _format_remaining(seconds) == expected

@@ -33,7 +33,7 @@ import logging
 import multiprocessing
 import traceback
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -531,6 +531,61 @@ def _write_batch(
                     copy.write_row(failed_row)
 
 
+def _format_remaining(seconds: float) -> str:
+    """A countdown as ``4h 12m``, ``43m``, ``18s``.
+
+    Two units at most. On a run measured in hours, a claim like ``2h 11m 07s``
+    asserts a precision the estimate does not have.
+    """
+    # Rounded, not truncated. Truncation turns 3599.6 seconds into "59m" and
+    # then, one second later, into "1h 00m" — and it is an extrapolation, so
+    # biasing every figure downward buys nothing.
+    total = round(seconds)
+    if total < 60:
+        return f"{total}s"
+    if total < 3600:
+        return f"{total // 60}m"
+    return f"{total // 3600}h {(total % 3600) // 60:02d}m"
+
+
+def _eta(
+    bytes_done: int,
+    bytes_total: int,
+    started: datetime,
+    now: datetime,
+) -> str:
+    """When this run will finish, absolute and relative.
+
+    ``ETA 14:07:32 EDT (36m)``
+
+    Averaged over the whole run rather than over the last batch. The batch
+    rate beside this in the log is the instantaneous figure and is genuinely
+    noisy — a single batch of large attachments halves it — which is useful
+    for spotting a stall but useless for predicting an end time. Over a
+    quarter-million messages the mean converges quickly and stops moving,
+    which is the property you want from something you are deciding whether to
+    wait for.
+
+    It reads pessimistic for the first minute or so, because the run-wide mean
+    still carries the cost of spawning the worker pool. That self-corrects,
+    and erring long is the right direction for a number someone plans around.
+
+    Local time, not UTC: it is compared against a wall clock, and it sits
+    beside log timestamps that are already local.
+    """
+    elapsed = (now - started).total_seconds()
+    remaining_bytes = bytes_total - bytes_done
+    # The last checkpoint of a run lands here. "unknown" would be a lie — the
+    # remaining work is not unknown, it is zero.
+    if remaining_bytes <= 0:
+        return "ETA now"
+    if elapsed <= 0 or bytes_done <= 0:
+        return "ETA unknown"
+    seconds_left = remaining_bytes / (bytes_done / elapsed)
+    finish = (now + timedelta(seconds=seconds_left)).astimezone()
+    return f"ETA {finish:%H:%M:%S %Z} ({_format_remaining(seconds_left)})"
+
+
 def _checkpoint(
     conn: psycopg.Connection[object],
     run_id: int,
@@ -670,6 +725,13 @@ def ingest(
                 run_id=run_id,
             )
 
+        # Bytes, not messages, drive the ETA. Message size on a real export
+        # spans five orders of magnitude — a one-line reply and a 25 MB
+        # attachment are both "one message" — and the work per message is
+        # dominated by reading, hashing and writing its bytes. A count-based
+        # estimate swings wildly whenever a run of large mail goes through.
+        pending_bytes = sum(length for _, length in pending)
+
         # ── Process pool ────────────────────────────────────────────────
         ctx = multiprocessing.get_context("spawn")
         messages_seen = skipped
@@ -753,13 +815,14 @@ def ingest(
                     )
                     logger.info(
                         "checkpoint: %d/%d messages, %d new, %d failures "
-                        "(%.0f msg/s, %.1f MiB/s)",
+                        "(%.0f msg/s, %.1f MiB/s) — %s",
                         messages_seen,
                         total,
                         messages_new,
                         failures,
                         batch_rate,
                         batch_mibs,
+                        _eta(bytes_processed, pending_bytes, _t0, now),
                     )
                     _batch_t0 = now
                     _batch_bytes = 0
