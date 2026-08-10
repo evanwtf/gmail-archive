@@ -607,37 +607,59 @@ def imap_backfill() -> None:
         ).fetchall()
 
         total = len(rows)
+        # A skip notice, not an exit. This phase returning nothing to do says
+        # nothing about the UID phase below, and returning here made the
+        # documented recovery from #13 impossible: that failure aborts *during*
+        # UID assignment, with every envelope already committed, so the re-run
+        # meant to finish the job found no envelope work, declared success and
+        # left the projection half built — silently, and with no indication of
+        # which folders were short.
         if total == 0:
             click.echo("All messages already have envelope and bodystructure.")
-            return
+        else:
+            click.echo(f"Backfilling {total} messages...")
 
-        click.echo(f"Backfilling {total} messages...")
+            from pymap.mime import MessageContent
 
-        from pymap.mime import MessageContent
+            done = 0
+            skipped = 0
+            for raw_sha256, _size_bytes in rows:
+                # `BlobStore.get` raises rather than returning None, so the
+                # `is None` check this replaces was dead code: a single
+                # unreadable blob aborted the whole backfill partway through,
+                # which is exactly the outcome the check was written to avoid.
+                # Skipping is right here — the message row survives, and
+                # `verify` is the command whose job is to report the gap.
+                try:
+                    raw_bytes = store.get(raw_sha256)
+                except OSError as exc:
+                    logger.warning(
+                        "blob unreadable for %s (%s), skipping", raw_sha256, exc
+                    )
+                    skipped += 1
+                    continue
 
-        done = 0
-        for raw_sha256, _size_bytes in rows:
-            raw_bytes = store.get(raw_sha256)
-            if raw_bytes is None:
-                logger.warning("Blob not found for %s, skipping", raw_sha256)
-                continue
+                content = MessageContent.parse(raw_bytes)
+                envelope = _json.dumps(_scrub(_envelope_to_dict(content)))
+                bodystructure = _json.dumps(_scrub(_bodystructure_to_dict(content)))
 
-            content = MessageContent.parse(raw_bytes)
-            envelope = _json.dumps(_scrub(_envelope_to_dict(content)))
-            bodystructure = _json.dumps(_scrub(_bodystructure_to_dict(content)))
+                conn.execute(
+                    "UPDATE messages SET envelope = %s::jsonb,"
+                    " bodystructure = %s::jsonb WHERE raw_sha256 = %s",
+                    (envelope, bodystructure, raw_sha256),
+                )
 
-            conn.execute(
-                "UPDATE messages SET envelope = %s::jsonb,"
-                " bodystructure = %s::jsonb WHERE raw_sha256 = %s",
-                (envelope, bodystructure, raw_sha256),
-            )
+                done += 1
+                if done % 100 == 0:
+                    conn.commit()
+                    click.echo(f"  {done}/{total}")
 
-            done += 1
-            if done % 100 == 0:
-                conn.commit()
-                click.echo(f"  {done}/{total}")
-
-        conn.commit()
+            conn.commit()
+            if skipped:
+                click.echo(
+                    f"  {skipped} message(s) skipped: blob unreadable. "
+                    "Run `verify` to reconcile."
+                )
 
         # ── Assign UIDs ──────────────────────────────────────────────
         #
@@ -660,6 +682,8 @@ def imap_backfill() -> None:
         folder_rows = conn.execute(
             "SELECT id, name FROM imap_folders ORDER BY name"
         ).fetchall()
+        uid_total = 0
+        folders_touched = 0
         for folder_id, folder_name in folder_rows:
             label_filter = None if folder_name == "INBOX" else folder_name
 
@@ -702,7 +726,17 @@ def imap_backfill() -> None:
             ).rowcount
 
             conn.commit()
-            click.echo(f"  Folder '{folder_name}': {assigned} new UIDs")
+            # Only folders that changed. A re-run touches nothing, and 133
+            # lines of "0 new UIDs" would bury the one folder that did move.
+            if assigned:
+                uid_total += assigned
+                folders_touched += 1
+                click.echo(f"  Folder '{folder_name}': {assigned} new UIDs")
+
+        click.echo(
+            f"Assigned {uid_total} UIDs across {folders_touched} "
+            f"of {len(folder_rows)} folders."
+        )
 
     click.echo("Backfill complete.")
 
