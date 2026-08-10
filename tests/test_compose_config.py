@@ -27,6 +27,58 @@ def _service(name: str) -> dict[str, Any]:
     return service
 
 
+def _project_version() -> str:
+    import tomllib
+
+    with (_REPO_ROOT / "pyproject.toml").open("rb") as fh:
+        version: str = tomllib.load(fh)["project"]["version"]
+    return version
+
+
+def _default_image_tag(raw: str) -> str:
+    """The tag compose falls back to when GMAIL_ARCHIVE_IMAGE_TAG is unset.
+
+    Parses `${VAR:-default}` out of the image line rather than running
+    `docker compose config`, so this test needs no Docker daemon.
+    """
+    _, _, tag_expr = raw.rpartition(":${GMAIL_ARCHIVE_IMAGE_TAG:-")
+    assert tag_expr, f"image line has no defaulted tag: {raw!r}"
+    return tag_expr.removesuffix("}")
+
+
+class TestPublishedImageTag:
+    """The compose default must track the version this tree builds.
+
+    Not a style rule. The pin sat at 0.2.8 while the database had been migrated
+    to the 0.3.0 schema, and `docker compose up -d` pulled code that queried a
+    column migration 0005 had dropped — every message detail page returned 503
+    until the image was rebuilt. Compose defaults are load-bearing: nothing
+    else in the repo notices when one goes stale.
+    """
+
+    def test_default_tag_matches_the_project_version(self) -> None:
+        tag = _default_image_tag(_service("web")["image"])
+        assert tag == _project_version(), (
+            f"docker-compose.yml defaults to image tag {tag!r} but "
+            f"pyproject.toml says {_project_version()!r}. Bump both together, "
+            "or the default stack runs a version older than its own schema."
+        )
+
+    def test_the_example_env_does_not_pin_something_older(self) -> None:
+        """`.env.example` is copied verbatim, so a stale value there sticks.
+
+        An override in `.env` beats the compose default, which makes a wrong
+        value here worse than no value: it survives every subsequent upgrade.
+        """
+        for line in (_REPO_ROOT / ".env.example").read_text().splitlines():
+            if line.startswith("GMAIL_ARCHIVE_IMAGE_TAG="):
+                pinned = line.split("=", 1)[1].strip()
+                assert pinned == _project_version(), (
+                    f".env.example pins image tag {pinned!r}, but this tree is "
+                    f"{_project_version()!r}"
+                )
+
+
 class TestWebService:
     def test_builds_the_hardened_runtime_stage(self) -> None:
         assert _service("web")["build"]["target"] == "runtime", (

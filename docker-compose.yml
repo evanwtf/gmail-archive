@@ -15,7 +15,14 @@ services:
     # build. `build:` stays for development and CI: `docker compose build web`
     # still builds from this tree, and compose falls back to building if the
     # image cannot be pulled.
-    image: ${GMAIL_ARCHIVE_IMAGE:-evandhoffman/gmail-archive}:${GMAIL_ARCHIVE_IMAGE_TAG:-0.2.8}
+    #
+    # The default tag must equal the version in pyproject.toml, and
+    # `tests/test_compose_config.py` fails if it does not. It drifted once and
+    # cost a live outage: the file still said 0.2.8 while the database had been
+    # migrated to the 0.3.0 schema, so `docker compose up -d` quietly pulled
+    # code that queried a dropped column and every message page returned 503.
+    # A stale pin here is not a cosmetic lag — it is a downgrade.
+    image: ${GMAIL_ARCHIVE_IMAGE:-evandhoffman/gmail-archive}:${GMAIL_ARCHIVE_IMAGE_TAG:-0.4.0}
     build:
       context: .
       dockerfile: Dockerfile
