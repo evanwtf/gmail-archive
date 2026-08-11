@@ -170,7 +170,33 @@ Re-run it after any later ingest.
 
 ---
 
-## 8. Use it
+## 8. Check it landed
+
+```bash
+docker compose run --rm web verify --deep
+```
+
+Worth the few minutes the first time. `verify` reconciles the database against
+the blob store; `--deep` also re-hashes every blob against its own filename,
+which works because the name *is* the checksum ([ADR-001](adr/001-blob-store.md)).
+
+Every counter should be zero except the four totals, which should agree:
+
+```json
+{
+  "messages_in_db": 277020, "blobs_on_disk": 277020,
+  "orphaned_blobs": 0, "missing_blobs": 0,
+  "deep_corrupt": 0, "sighting_mismatch": 0
+}
+```
+
+`missing_blobs` above zero is the one that matters: those messages have a row
+and no body, and the UI will not tell you — a missing blob renders as an empty
+message rather than an error.
+
+---
+
+## 9. Use it
 
 Open **http://localhost:8000** and sign in.
 
@@ -180,6 +206,9 @@ Open **http://localhost:8000** and sign in.
 - **People** — who you actually correspond with, who just mails you, and who
   you have lost touch with
 - **Trends** — how your mail changed over the years
+- **Stats** — what is in the archive and where the disk went
+- **imported** chip, top right — when the archive was last built, and a link
+  to `/imports` for the runs behind it
 - **?** in the top right — the full search syntax, always current
 
 Search operators worth knowing immediately:
@@ -199,18 +228,25 @@ They combine: `from:amazon has:attachment after:2025-01-01 refund`.
 
 ---
 
-## 9. Optional: IMAP
+## 10. Optional: IMAP
 
 Read the archive in a real mail client.
 
 ```bash
 # .env needs GMAIL_ARCHIVE_IMAP_PASSWORD set first
-docker compose run --rm web imap-backfill    # once; ~40 minutes for 277k messages
+docker compose run --rm web imap-backfill    # ~40 minutes for 277k messages
 docker compose --profile imap up -d imap
 ```
 
+Safe to re-run after a later ingest: it assigns UIDs only to messages that
+do not have one yet, and never renumbers an existing one.
+
 Then connect to `localhost:1143`, username `archive`, no encryption. Gmail
 labels appear as folders. It is strictly read-only.
+
+One caveat: every message shows as read and none as flagged, because `Seen` is
+applied unconditionally — Gmail's `Unread` and `Starred` labels do not reach
+the client ([#58](https://github.com/evanwtf/gmail-archive/issues/58)).
 
 Published on loopback only, deliberately: one shared password and no TLS.
 
@@ -229,7 +265,7 @@ archive is readable by anyone on your network.
 **Searching feels slow right after ingesting.**
 Ingest refreshes planner statistics itself, but a full vacuum after a large
 import also builds the visibility map:
-`docker compose exec postgres psql -U gmail_archive -d gmail_archive -c "vacuum (analyze) messages, blobs, labels, attachments"`
+`docker compose exec postgres psql -U gmail_archive -d "$GMAIL_ARCHIVE_DB" -c "vacuum (analyze) messages, blobs, labels, attachments"`
 
 **"another ingest is already running against this database".**
 Exactly what it says. Wait, or check
@@ -238,7 +274,7 @@ Exactly what it says. Wait, or check
 **`docker compose run --rm web python ...` does not work.**
 The image's entrypoint *is* the CLI, so the subcommand is the argument:
 `docker compose run --rm web stats`. To reach Postgres directly, use
-`docker compose exec postgres psql -U gmail_archive -d gmail_archive`.
+`docker compose exec postgres psql -U gmail_archive -d "$GMAIL_ARCHIVE_DB"`.
 
 **People and Trends are empty.**
 Run `analyze` (step 7).

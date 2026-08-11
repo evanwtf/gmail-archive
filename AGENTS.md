@@ -26,17 +26,21 @@ gmail-archive/
 │   ├── storage.py              # Content-addressed blob store
 │   ├── migrate.py              # Numbered .sql migration runner
 │   ├── query.py                # Read-only query surface (stats, search, list)
+│   ├── searchquery.py          # Search operator grammar (from:, label:, ...)
+│   ├── analytics.py            # Sender profiling, correspondents, yearly trends
 │   ├── export.py               # Message export (mbox or eml)
 │   ├── verify.py               # Integrity verification
 │   ├── version.py              # Build metadata
 │   ├── logging_setup.py        # Logging configuration
 │   ├── fixtures/               # Synthetic mbox fixture generator
 │   │   ├── addresses.py        # RFC 2606 address construction
-│   │   └── generator.py        # 26 pathologies, measured-rate default mix
+│   │   └── generator.py        # 27 pathologies, measured-rate default mix
 │   ├── web/                    # FastAPI web UI
-│   │   ├── app.py              # Routes, CSP middleware
-│   │   ├── templates/          # 8 Jinja2 templates
-│   │   └── static/             # CSS
+│   │   ├── app.py              # Routes, auth + CSP middleware
+│   │   ├── auth.py             # scrypt hashing, HMAC session cookies, throttle
+│   │   ├── filters.py          # Jinja filters (presentation only, no I/O)
+│   │   ├── templates/          # 16 Jinja2 templates
+│   │   └── static/             # CSS, vendored htmx
 │   ├── sources/                # Message source protocol
 │   │   ├── protocol.py         # MessageSource protocol
 │   │   ├── mbox_source.py      # MboxSource adapter
@@ -45,22 +49,30 @@ gmail-archive/
 │       ├── backend.py          # Backend, Login, Identity, Session, Config
 │       ├── mailbox.py          # MailboxData, MailboxSet
 │       └── message.py          # Message, LoadedMessage
-├── migrations/                 # Numbered .sql migrations
-│   ├── 0001_initial.sql        # Core schema (8 tables)
-│   └── 0002_imap.sql           # IMAP folder/UID model
-├── tests/                      # 14 test files: 208 unit, 41 integration, 1 slow
-│   ├── conftest.py             # Shared fixtures
-│   ├── test_parser.py          # Parser + hypothesis property tests (44)
-│   ├── test_ingest.py          # Ingest pipeline tests (10)
-│   ├── test_sources.py         # Message source tests (30, respx mocks)
-│   └── ...                     # NOTE: nothing covers imap/ — see issue #16
+├── migrations/                 # Numbered .sql, forward-only; see docs/schema.md
+│   ├── 0001_initial.sql        # Core schema
+│   ├── 0002_imap.sql           # IMAP folder/UID model
+│   ├── 0003_analytics.sql      # sender_profiles
+│   ├── 0004_message_headers.sql# Kept headers, for bulk-vs-human
+│   ├── 0005_drop_body_html.sql # Reclaimed ~1.7 GB; re-derived from the blob
+│   └── 0006_accounts.sql       # Account dimension; rekeys labels (ADR-006)
+├── tests/                      # 22 files: 629 tests — 502 unit, 123 integration, 4 slow
+│   ├── conftest.py             # Shared fixtures, scratch_database helper
+│   ├── test_parser.py          # Parser + hypothesis property tests
+│   ├── test_ingest.py          # Ingest pipeline, ETA, storability invariants
+│   ├── test_imap_*.py          # auth, mailbox (incl. e2e over a socket), backfill
+│   ├── test_compose_config.py  # Pins the production posture of docker-compose.yml
+│   └── ...                     # Integration tests skip without a test DSN
 ├── docs/
 │   ├── plan.md                 # Full project specification
 │   ├── progress.md             # Build log with findings
+│   ├── getting-started.md      # First run, end to end
 │   ├── runbook.md              # Operations guide
+│   ├── schema.md               # What each migration did, and why
+│   ├── docker-hub.md           # Image build and publish
 │   └── adr/                    # Architecture Decision Records
 ├── Dockerfile                  # Multi-stage build (python:3.13.14-slim-trixie)
-├── docker-compose.yml          # web + postgres + init-perms + ingest profile
+├── docker-compose.yml          # web + postgres + init-perms + imap/ingest profiles
 └── pyproject.toml              # Project config, entry points, tool settings
 ```
 
@@ -74,30 +86,44 @@ gmail-archive/
 
 ### Database
 - Raw message bytes are on disk (blob store), not in Postgres
-- `raw_sha256` is the primary key for messages (hash of unquoted RFC822 —
-  intended, but ingest does not actually unquote today: #10)
+- `raw_sha256` is the primary key for messages: the sha256 of the message
+  bytes after the mbox `From_` line is stripped (#53) and mboxrd quoting is
+  reversed (#10, ADR-002). Both fixes changed every key in the archive, so
+  neither could be a migration — see docs/schema.md
 - All message fields are best-effort (nullable)
 - Keyset pagination: `(internal_date DESC NULLS LAST, raw_sha256 DESC)`
-- Migrations are numbered `.sql` files applied by an in-repo runner
+- Migrations are numbered `.sql` files applied by an in-repo runner, and are
+  forward-only: recovery is a re-ingest from the export, not a rollback
+- `labels` is keyed `(account_id, raw_sha256, label)` since 0006, so lookups
+  by hash alone rely on the Postgres 18 skip scan (#60)
 
 ### Testing
-- 208 unit tests, 41 integration tests (skip without DSN), 1 slow test
+- 629 tests: 502 unit, 123 integration (skip without DSN), 4 slow (deselected
+  by default via `addopts`)
 - Integration tests gated on `GMAIL_ARCHIVE_TEST_DATABASE_URL`
+- **Two mutually exclusive env shapes.** That variable tells the suite which
+  tests to un-skip; `GMAIL_ARCHIVE_DATABASE_URL` is what the app itself reads.
+  Setting only the first fails the `TestHtmlRoutesWithDb` tests; setting both
+  fails the `TestHtmlRoutesNoDb` tests, which assert the 503. CI runs `pytest
+  -q` with neither, then `pytest -m integration -q` with both. A local full run
+  showing failures in `tests/test_web.py` is expected, not a regression
 - Hypothesis property test: `parse()` never raises for any byte string
 - respx for HTTP mocking (no real network in tests)
-- **`src/gmail_archive/imap/` has no tests at all.** A green `pytest` run says
-  nothing about the IMAP server, and the server does not currently work. Do not
-  read the suite as evidence about that package (#16)
+- `imap/` is covered now (#16): auth, mailbox, and an end-to-end test that
+  drives a real server on an ephemeral port with `imaplib`
 
 ### Before trusting this code
 
 A full-repo review on 2026-08-06 found defects in ingest, IMAP, export, and the
-web UI, several of which contradict the docstrings and ADRs in the same files.
-The findings and their issue numbers are tabulated at the end of
-`docs/progress.md` under "Post-build review". Read that table before changing
-`ingest.py`, `export.py`, or anything under `imap/` — in particular, ingest does
-**not** currently unquote mboxrd despite ADR-002 and every docstring saying it
-does (#10).
+web UI, several of which contradicted the docstrings and ADRs in the same
+files. Most are now fixed, including the two that changed every `raw_sha256`
+in the archive (#10 mboxrd unquoting, #53 the mbox separator byte). Read the
+table at the end of `docs/progress.md` under "Post-build review" as a **dated
+snapshot**, not as current status.
+
+The live list is the GitHub issues. `open`/`closed` is the signal to trust —
+this file has carried stale "known defect" claims twice, which is worse than
+carrying none.
 
 ### Public repository hygiene
 - No personal data in fixtures (RFC 2606 domains only)
@@ -118,10 +144,11 @@ See `docs/adr/` for full ADRs:
 
 1. **Content-addressed blob store** — raw bytes on disk, not in Postgres
 2. **mboxrd unquoting** — hash the unquoted RFC822, not the file bytes
-   (decided, not implemented — see #10)
 3. **Keyset pagination** — `NULLS LAST` for the ~2.7% of messages without dates
 4. **pymap for IMAP** — protocol library over hand-rolling
 5. **Read-only archive** — no mutation after ingest
+6. **Account dimension as a join table** — a message can belong to two
+   accounts, so it cannot be a column on `messages`
 
 ## Common tasks
 

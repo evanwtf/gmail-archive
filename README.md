@@ -26,8 +26,9 @@ not to. It is not a product. There is no support, no release process, and no
 commitment to backwards compatibility — the schema, the CLI, and the storage
 layout may all change without migration paths. If you find it useful, fork it.
 
-Several parts do not currently do what their docstrings say. See
-[Known defects](#known-defects) before trusting it with anything.
+It is, however, tested and exercised against a real 277,020-message archive.
+See [Known defects](#known-defects) for what is open today — and trust the
+issue list over any prose here, including this sentence.
 
 > **New here?** [docs/getting-started.md](docs/getting-started.md) walks the
 > whole path, starting where you actually start: requesting the Takeout
@@ -104,13 +105,16 @@ success, so planner statistics are current the moment it finishes. A manual
 `VACUUM` is still worth doing — it builds the visibility map that lets
 aggregate queries use index-only scans — but it is an optimisation, not a
 prerequisite. See
-[docs/runbook.md](docs/runbook.md#after-a-large-ingest-vacuum-and-analyze).
+[docs/runbook.md](docs/runbook.md#after-a-large-ingest-vacuum).
 
-> **Run `imap-backfill` once, after the *initial* ingest.** Re-running it after
-> a second ingest aborts partway through with earlier folders already
-> committed: the envelope half is safe to repeat, but the UID half assigns UIDs
-> by position and collides on `(folder_id, uid)` as soon as the message set has
-> changed. [#13](https://github.com/evanwtf/gmail-archive/issues/13).
+All three are safe to re-run. `imap-backfill` in particular used to number
+UIDs by position, so a single new message shifted everything after it and the
+re-run collided on `(folder_id, uid)`
+([#13](https://github.com/evanwtf/gmail-archive/issues/13)); it now assigns
+only to messages that have no UID in that folder, counting up from the
+folder's current maximum. Existing UIDs are never touched — clients cache them
+hard and read a changed UID as data loss — so a re-run after a second ingest
+simply appends.
 
 ## Starting over from the export
 
@@ -173,18 +177,29 @@ twenty years of mail to anyone who can reach the port.
 
 | Route | What |
 |---|---|
-| `/` | Stats dashboard — aggregate archive statistics |
-| `/messages` | Message list, keyset-paginated; `?label=`, `?limit=`, `?after_date=`, `?after_sha=` |
+| `/` | Inbox — the Gmail-shaped message list; `?label=`, `?limit=`, `?after_date=`, `?after_sha=` |
+| `/messages` | The same list scoped to All Mail |
 | `/messages/{sha256}` | Headers, body (HTML in a sandboxed iframe), labels, parse warnings |
 | `/messages/{sha256}/raw` | Raw RFC822 source, rendered in the browser |
+| `/messages/{sha256}/attachments/{index}` | One attachment, re-extracted from the raw message |
 | `/thread/{thread_id}` | All messages in a thread |
 | `/search` | Full-text search; `?q=`, `?sort=date\|date-asc\|relevance` (default `date`), `?limit=`, `?offset=` |
 | `/labels` | All labels with message counts |
+| `/people` | Correspondents, split human vs automated; `?kind=human\|bulk` |
+| `/people/{address}` | One correspondent: volume, span, activity by year |
+| `/trends` | Activity by year |
+| `/stats` | Archive statistics and storage accounting — the dashboard that used to be at `/` |
+| `/imports` | Provenance: which exports this archive was built from, and when |
 | `/raw/{sha256}` | Raw download, `Content-Disposition: attachment` |
+| `/login`, `/logout` | Session forms. `/logout` is POST-only, so a link cannot trigger it |
 | `/healthz` | Liveness — deliberately does not touch Postgres |
 | `/readyz` | Readiness — real Postgres round-trip; 503 when unavailable |
 | `/version` | Build metadata as JSON |
 | `/docs` | FastAPI's generated API docs |
+
+Only `/healthz`, `/login`, `/logout` and `/static/` are reachable without a
+session. **`/readyz` and `/version` are behind the password**, so an external
+monitor has to use `/healthz` — which is why the container healthcheck does.
 
 ### CLI
 
@@ -217,18 +232,28 @@ uv run gmail-archive verify --deep
 
 ### IMAP
 
-> **Not working.** Every login is rejected, including one with the configured
-> password ([#11](https://github.com/evanwtf/gmail-archive/issues/11)), and
-> Compose has no way to run it
-> ([#25](https://github.com/evanwtf/gmail-archive/issues/25)). Documented as
-> the intended interface, not a working procedure.
+Set `GMAIL_ARCHIVE_IMAP_PASSWORD` in `.env`, run the backfill once, then
+bring it up on its own profile:
 
 ```bash
-GMAIL_ARCHIVE_IMAP_PASSWORD=yourpassword uv run gmail-archive imap
+docker compose run --rm web imap-backfill
+docker compose --profile imap up -d imap
 # Server: localhost, Port: 1143, Username: archive
 ```
 
-Gmail labels map to IMAP folders. The server is read-only.
+Or outside Docker: `GMAIL_ARCHIVE_IMAP_PASSWORD=... uv run gmail-archive imap`.
+
+Gmail labels map to IMAP folders — one message appears in several, with a
+different permanent UID in each. Published on loopback only, deliberately: one
+shared password and no TLS. The server is strictly read-only and answers `NO`
+to APPEND, COPY, MOVE, DELETE and flag updates.
+
+Both of the defects that made this unusable are fixed: logins were rejected
+even with the right password
+([#11](https://github.com/evanwtf/gmail-archive/issues/11)) and Compose had no
+way to run it ([#25](https://github.com/evanwtf/gmail-archive/issues/25)). What
+remains is [#58](https://github.com/evanwtf/gmail-archive/issues/58) — every
+message reports as read.
 
 ## Build & run
 
@@ -287,7 +312,9 @@ Takeout mbox ──> ingest pipeline ──┬──> Postgres    (metadata, sea
 `raw_sha256` — the hash of the message — is both the primary key and the blob's
 path on disk, so integrity checking needs no stored checksum: the name *is* the
 checksum. Migrations are numbered `.sql` files under `migrations/`, applied by
-an in-repo runner. Decisions are recorded in [docs/adr/](docs/adr/).
+an in-repo runner and forward-only — see [docs/schema.md](docs/schema.md) for
+what each one did and which cannot be applied to a live archive. Decisions are
+recorded in [docs/adr/](docs/adr/).
 
 ## Measured performance
 
@@ -317,22 +344,35 @@ a much higher msg/s and similar MB/s.
 
 ## Known defects
 
-**None currently open.** Every defect this table has ever listed is closed;
-the live list is [the bug label](https://github.com/evanwtf/gmail-archive/issues?q=is%3Aissue+is%3Aopen+label%3Abug),
+The live list is
+[the bug label](https://github.com/evanwtf/gmail-archive/issues?q=is%3Aissue+is%3Aopen+label%3Abug),
 which is the thing to trust — a hand-maintained table here has gone stale
-twice, and a stale defect list is worse than none.
+twice, and a stale defect list is worse than none. What is open today:
 
-Two things worth knowing that are not defects:
+- **`parse()` still builds an HTML body nobody reads**
+  ([#57](https://github.com/evanwtf/gmail-archive/issues/57)). Wasted work on
+  every message, not wrong output — `0005` dropped the column it used to feed,
+  and the detail page re-derives the HTML from the blob instead.
+- **IMAP reports every message as read, and none as flagged**
+  ([#58](https://github.com/evanwtf/gmail-archive/issues/58)). `Seen` is
+  applied unconditionally, so Gmail's `Unread` and `Starred` labels — 31,734
+  and 57,104 messages on the reference archive — do not reach a mail client.
+  Filed as an enhancement, but it is the one open item you will actually
+  notice.
+
+Two more things worth knowing that are not defects:
 
 - **`gmail_archive.sources.GmailApiSource` is interface-only.** Nothing calls
-  it, and its 403 rate-limit handling is known-broken
-  ([#23](https://github.com/evanwtf/gmail-archive/issues/23)). The supported
-  ingest path is the Takeout mbox.
+  it. It retries 429 and 5xx and refreshes on 401, but does not handle 403 —
+  which is how Gmail actually signals rate limiting
+  ([#23](https://github.com/evanwtf/gmail-archive/issues/23), closed as out of
+  scope rather than fixed). The supported ingest path is the Takeout mbox.
 - **Updating the archive means a new Takeout export.** There is no incremental
   sync yet ([#55](https://github.com/evanwtf/gmail-archive/issues/55)).
 
-Full list, with the test and CI gaps behind them, at the end of
-[docs/progress.md](docs/progress.md#post-build-review--2026-08-06).
+The [2026-08-06 post-build review](docs/progress.md#post-build-review--2026-08-06)
+has the reasoning behind most of these, but read it as a dated snapshot: much
+of what it lists has since been fixed.
 
 ## Documentation
 
@@ -343,6 +383,8 @@ Full list, with the test and CI gaps behind them, at the end of
 | [docs/progress.md](docs/progress.md) | What was built, how to verify it, and findings worth keeping |
 | [docs/getting-started.md](docs/getting-started.md) | First run, end to end: Takeout export through to searching |
 | [docs/runbook.md](docs/runbook.md) | Operations: ingesting, resuming, verifying, backup and restore, troubleshooting |
+| [docs/schema.md](docs/schema.md) | What each migration did and why; which ones cannot be applied to a live archive |
+| [docs/docker-hub.md](docs/docker-hub.md) | How the image is built and published |
 | [docs/adr/](docs/adr/) | Architecture Decision Records |
 | [AGENTS.md](AGENTS.md) | Conventions and repository map for AI agents |
 

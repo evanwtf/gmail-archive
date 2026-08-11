@@ -64,10 +64,19 @@ TLS-terminating proxy if it needs to be more than that.
 
 ## Tags
 
-Version tags only — `0.2.5`, `0.2`. **There is deliberately no `latest`.** The
-database schema changes between versions and nothing migrates it for you, so a
-floating tag would invite an upgrade across a breaking change by accident. Pin
-a version and read the release notes before moving.
+Every release publishes an exact tag and a moving minor tag — `0.4.0` and
+`0.4`. **There is deliberately no `latest`.** The database schema changes
+between versions and nothing migrates it for you, so a floating tag would
+invite an upgrade across a breaking change by accident. Pin a version and read
+the release notes before moving.
+
+That is not hypothetical. `0.3.0` dropped `messages.body_html`, so a `0.2.x`
+image against a `0.3.0` database returns 503 on every message detail page —
+while still passing its healthcheck. The compose default tag tracks the
+version in `pyproject.toml` and a test enforces it, for exactly this reason.
+
+`docker pull evandhoffman/gmail-archive` with no tag therefore fails. That is
+intended.
 
 `linux/amd64` today.
 
