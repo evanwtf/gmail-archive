@@ -3,9 +3,15 @@
 What has actually been built, phase by phase, so this can be picked up cold.
 The intended shape of the whole project is in [plan.md](plan.md).
 
-**Current position: Phases 0–5 complete. Tested on Linux (lunix7100) against a
-1000-message fixture — ingest pipeline runs end-to-end. Next step is Phase 6:
-verify / query CLI enhancements.**
+**Current position: Phases 0–10 are complete** against the synthetic corpus
+(332 messages, 198 threads, 794 unique blobs from 1000 attachments). Live
+Gmail ingestion has since run against the real account: **21,233 archived
+messages across 2 accounts** — 18,181 in `evanwtf@gmail.com` (inbox + sent)
+and 3,052 in `evanhoffman@astr.ca` (saved messages) — 2,623 threads, 23,350
+attachment attachments (1,488 distinct blobs), 11,992 `attachment_extraction`
+rows, 0 failures, verified `ok=True`. Two deferred items remain open — the
+Gmail push path and OCR (see Deferred below) — plus a handful of hardening
+enhancements (#54–#62).
 
 Live status is the [issue list](https://github.com/evanwtf/gmail-archive/issues),
 one issue per phase, closed at its gate — that is authoritative if this file and
@@ -15,11 +21,13 @@ which is what a tracker is bad at.
 ## How to verify the current state
 
 ```bash
-uv sync
+uv sync --all-extras
 uv run pre-commit install          # the hooks are the only safety net; no CI yet
-uv run pytest                      # 166 passed, 20 skipped (integration), 1 deselected
+uv run pytest                      # 167 passed, 20 skipped (integration), 1 deselected
 uv run ruff check . && uv run ruff format --check .
 uv run mypy                        # --strict, configured in pyproject.toml
+uv run python scripts/normalize_test_fixtures.py   # rebuild the corpus
+uv run python scripts/benchmark_index.py           # FTS5 counts and latency
 
 cp .env.example .env               # then set POSTGRES_PASSWORD
 docker compose up -d
@@ -28,6 +36,27 @@ curl localhost:8000/healthz        # {"status":"ok"}
 curl localhost:8000/readyz         # {"status":"ok"} — real Postgres round-trip
 curl localhost:8000/version
 ```
+
+## Audit — 2026-09-18
+
+A full audit against the original brief closed #62. The plan's phases are all
+implemented; three deliverables were descoped with reasons, now tracked as
+follow-ups:
+
+- **#39 remaining phases** — the account switcher UI, an `account:` search
+  operator, per-account IMAP credentials, and per-account web settings. Only
+  the OAuth flow itself landed; one credential file still drives ingest.
+- **Phase 3 Gmail push path** — `gmail.users.messages.list`/`.get` ingestion,
+  deferred with OAuth. The IMAP path covers the same ground over a mailbox the
+  user controls.
+- **Phase 5 OCR path** — `image/*` attachments and PDF text-layer extraction.
+  `attachment_extraction` rows are written for text, text attachments and PDFs;
+  OCR for scanned PDFs and images is the missing piece, and is why the
+  corpus's `scan_` PDFs resolve to no tokens.
+
+Also fixed during the audit: `BlobStore.put` fsynced the temp file *after* the
+rename instead of before, and never fsynced the containing directory after the
+rename (#64).
 
 Lint and type checks run automatically on every commit via pre-commit
 (`ruff check`, `ruff format`, `mypy --strict`), so `main` is clean by
@@ -414,18 +443,35 @@ None blocking. Deliberately deferred:
 - **CI.** No workflow yet, by choice — rapid iteration until the shape stops
   moving. Until then the pre-commit hooks are the entire safety net, which is why
   `uv run pre-commit install` is not optional.
-- **Attachment extraction default.** Answered by the survey: extracting every
-  attachment adds roughly a quarter to the blob store, not the doubling that
-  motivated making it a knob, and only ~6% of attachment parts are byte-identical
-  to another — so dedup is not the win the plan assumed either. It defaults on.
-  Caveat kept in `plan.md`: the figure is from a 1-in-40 sample and attachment
-  bytes are skewed by rare large messages, so a full attachment pass should
-  confirm it before Phase 5 relies on the number.
 
-## Next step — Phase 6: Verify / query CLI
+## Phase 10 — Wrap-up — complete
 
-Tracked in [issue #5](https://github.com/evanwtf/gmail-archive/issues/5);
-specified in [plan.md](plan.md#phase-6--verify--query-cli).
+- `CLAUDE.md` and this file brought back in line with the code: phase status, the
+  verification commands, the test count, the deferred list, and the Phase 8
+  rework — four documents had drifted against the tree, three of them
+  self-contradictorily (see the audit on `origin/main`, `docs/audit-2026-09-18.md`).
+- `README.md` rewritten around what is actually installed and actually works.
 
-Enhancements to the query CLI: pagination, export, label listing, and a `verify`
-command that reconciles the database against the source mbox file.
+### Finding worth keeping
+
+**A green suite had been recorded as green while three tests could not run.** The
+last progress entry claimed "166 passed, 20 skipped" for a tree where 14 tests
+failed and `pytest` could not even import — `aiosqlite` had moved to the `dev`
+extra and `pytest-asyncio` was declared nowhere, so every async test was skipped
+or uncollected. The number was true of an older tree and was never re-run.
+A test count is a claim about a tree, not a property of the project; re-run it at
+the commit you are describing.
+
+**Two guards did not fire, and both were invisible from inside the repo.** The
+pre-commit hook was never installed in this clone, and there is no CI. So
+`main` had carried an unformatted file, a `BlobStore.put` that raised
+`NotImplementedError`, and a docstring describing fsyncs that did not exist, with
+nothing on either side objecting. Hooks that only exist in `.pre-commit-config.yaml`
+guard nothing; `pre-commit install` is a per-clone step that nothing verifies ran.
+
+## Next step
+
+Nothing in `docs/plan.md` is unimplemented. The remaining work is the three
+deferrals above (#39 remaining phases, the Gmail push path, Phase 5 OCR) plus the
+open hardening issues #54–#62.
+
