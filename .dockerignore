@@ -1,0 +1,21 @@
+.git
+.gitignore
+.github
+.venv
+__pycache__
+*.pyc
+.pytest_cache
+.mypy_cache
+.ruff_cache
+
+# Never let mail reach the build context. Docker sends the context to the
+# daemon before any Dockerfile instruction runs, so an 80 GB mbox sitting in
+# the working tree would be copied wholesale even though nothing COPYs it.
+.env
+data/
+blobs/
+backups/
+*.mbox
+
+docs
+tests

@@ -1,0 +1,21 @@
+# Never commit mail. This repository is public and git history is permanent;
+# the remedy for a mistake here is a history rewrite, not a revert. The
+# pre-commit hooks in .pre-commit-config.yaml enforce the same rules for
+# anything that slips past these patterns (e.g. an .mbox under another name).
+data/
+*.mbox
+blobs/
+backups/
+
+.env
+.venv/
+
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+.DS_Store

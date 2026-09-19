@@ -1,0 +1,59 @@
+[project]
+name = "gmail-archive"
+version = "0.1.0"
+description = "Ingest a Google Takeout Gmail mbox export into Postgres for permanent local archival, search, and export"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.13"
+dependencies = [
+    "click>=8.1",
+    "fastapi>=0.115",
+    "jinja2>=3.1",
+    "psycopg[binary,pool]>=3.2",
+    "uvicorn[standard]>=0.34",
+]
+
+[project.scripts]
+gmail-archive = "gmail_archive.cli:main"
+
+[dependency-groups]
+dev = [
+    "httpx>=0.28.1",
+    "hypothesis>=6.120",
+    "mypy>=1.13",
+    "pre-commit>=4.0",
+    "pytest>=8.3",
+    "pyyaml>=6.0",
+    "ruff>=0.8",
+    "types-pyyaml>=6.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/gmail_archive"]
+
+[tool.ruff]
+target-version = "py313"
+line-length = 88
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "UP", "B", "SIM", "RUF"]
+
+[tool.mypy]
+python_version = "3.13"
+strict = true
+files = ["src", "tests", "scripts"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Integration tests need a Postgres DSN in GMAIL_ARCHIVE_TEST_DATABASE_URL and
+# skip cleanly without one, so the default run stays Docker-free.
+markers = [
+    "integration: requires GMAIL_ARCHIVE_TEST_DATABASE_URL",
+    "slow: throughput runs over large generated fixtures; not part of the default suite",
+]
+addopts = "-m 'not slow'"

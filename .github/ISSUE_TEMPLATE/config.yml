@@ -1,0 +1,10 @@
+# The spec is a file, not an issue. Point people at it rather than letting the
+# design get re-litigated across nine issue threads.
+blank_issues_enabled: true
+contact_links:
+  - name: Build plan (all phases)
+    url: https://github.com/evanwtf/gmail-archive/blob/main/docs/plan.md
+    about: The scoped specification. Phase issues link to a section of this and track state only.
+  - name: Progress log
+    url: https://github.com/evanwtf/gmail-archive/blob/main/docs/progress.md
+    about: What has been built, how to verify it, and findings worth keeping.
