@@ -68,7 +68,31 @@ class BlobStore:
 
     def put(self, data: bytes, *, sha256: str | None = None) -> WriteResult:
         """Store `data`, returning its digest. Durable before it returns."""
-        raise NotImplementedError("removed for benchmark")
+        digest = hashlib.sha256(data).hexdigest()
+        if sha256 is not None and sha256 != digest:
+            raise ValueError(
+                f"caller-supplied digest {sha256} does not match content {digest}"
+            )
+
+        path = self.path_for(digest)
+        if path.exists():
+            return WriteResult(digest, len(data), path, written=False)
+
+        path.parent.mkdir(parents=True, exist_ok=True)
+        # mkstemp, not a fixed name: concurrent writers must not collide.
+        fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=".tmp-", suffix=".blob")
+        tmp = Path(tmp_name)
+        try:
+            with os.fdopen(fd, "wb") as fh:
+                fh.write(data)
+                fh.flush()
+                os.fsync(fh.fileno())
+            os.replace(tmp, path)
+        except OSError:
+            tmp.unlink(missing_ok=True)
+            raise
+        _fsync_dir(path.parent)
+        return WriteResult(digest, len(data), path, written=True)
 
     def get(self, sha256: str) -> bytes:
         return self.path_for(sha256).read_bytes()
