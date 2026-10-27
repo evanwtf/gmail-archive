@@ -41,10 +41,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # The runner is shared: keep the uv cache to this run. The shared
+      # default path held a file the runner user could not read, and every
+      # run failed in `uv sync` from 2026-10-23 (baseline conventions/ci.md).
       - name: Install uv
         uses: astral-sh/setup-uv@v5
         with:
-          enable-cache: true
+          cache-local-path: ${{ runner.temp }}/uv-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Sync dependencies
         run: uv sync --frozen
